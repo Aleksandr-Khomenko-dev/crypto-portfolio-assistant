@@ -1,0 +1,42 @@
+# Secrets / local configuration (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local databases and scanner lock files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite3
+*.scanner.lock
+backups/
+
+# Logs
+logs/
+*.log
+
+# OS / editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Personal portfolio loaders (hard-coded real holdings)
+scripts/load_real_portfolio.py
+scripts/reload_exact_portfolio.py
+
+alembic.ini.bak

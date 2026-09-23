@@ -1,0 +1,74 @@
+# Локально/VPS: docker compose up -d  →  API + PostgreSQL (алерты из scheduler в API).
+# Отдельный polling-бот: docker compose --profile telegram-bot up -d
+# На проде задай пароль: export POSTGRES_PASSWORD=...
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: portfolio-signal-agent-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-portfolio_db}
+      POSTGRES_USER: ${POSTGRES_USER:-portfolio_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_pass}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-portfolio_user} -d ${POSTGRES_DB:-portfolio_db}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio-signal-agent-api
+    env_file:
+      - .env
+    environment:
+      CPDA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-portfolio_user}:${POSTGRES_PASSWORD:-portfolio_pass}@postgres:5432/${POSTGRES_DB:-portfolio_db}
+      CPDA_MARKET_PROVIDER_ORDER: ${CPDA_MARKET_PROVIDER_ORDER:-coingecko,binance}
+      CPDA_SCHEDULER_ENABLED: "true"
+      CPDA_TELEGRAM_POLLING_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+
+  bot:
+    profiles:
+      - telegram-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio-signal-agent-bot
+    env_file:
+      - .env
+    environment:
+      CPDA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-portfolio_user}:${POSTGRES_PASSWORD:-portfolio_pass}@postgres:5432/${POSTGRES_DB:-portfolio_db}
+      CPDA_MARKET_PROVIDER_ORDER: ${CPDA_MARKET_PROVIDER_ORDER:-coingecko,binance}
+      CPDA_SCHEDULER_ENABLED: "false"
+      CPDA_TELEGRAM_POLLING_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+      python -m app.telegram.bot"
+    volumes:
+      - ./:/app
+
+volumes:
+  postgres_data:
