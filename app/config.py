@@ -3,10 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# .env and relative SQLite paths resolve from the project root, not the shell's cwd;
+# otherwise running from another directory silently falls back to the PostgreSQL default.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +24,7 @@ class TakeProfitBand:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -125,6 +131,13 @@ class Settings(BaseSettings):
     scanner_universe_cache_seconds: int = Field(default=300, ge=1)
     scanner_data_grace_seconds: int = Field(default=5, ge=0, le=60)
     binance_futures_base_url: str = "https://fapi.binance.com"
+    # Primary scanner exchange. One run uses exactly one exchange for every metric.
+    scanner_provider: Literal["bingx", "binance"] = "bingx"
+    bingx_base_url: str = "https://open-api.bingx.com"
+    # Observed BingX headers: x-ratelimit-requests-remain/expire (500 per 10 s window).
+    # Budget half of it; the scanner shares the IP with anything else you run.
+    bingx_requests_per_window: int = Field(default=250, ge=10, le=500)
+    bingx_rate_window_seconds: float = Field(default=10.0, gt=0, le=60)
     scanner_watch_score: int = Field(default=60, ge=0, le=100)
     scanner_setup_score: int = Field(default=70, ge=0, le=100)
     scanner_high_score: int = Field(default=80, ge=0, le=100)
@@ -153,8 +166,32 @@ class Settings(BaseSettings):
     scanner_use_btc_context: bool = True
     scanner_use_derivatives: bool = True
     fvg_min_atr: float = Field(default=0.15, ge=0)
+    # Dry run labels 24/7 research collection; the scanner never trades in any mode.
+    scanner_dry_run: bool = False
+    scanner_send_telegram: bool = True
+    # Setup-outcome horizon in closed bars of the setup's trigger timeframe
+    # (scanner setups currently trigger on 15m; 1h/4h are for future triggers).
+    outcome_max_bars_15m: int = Field(default=96, ge=1, le=280)
+    outcome_max_bars_1h: int = Field(default=72, ge=1, le=280)
+    outcome_max_bars_4h: int = Field(default=42, ge=1, le=280)
+    outcome_ltf_resolution: bool = True
+    calibration_bands: str = "60,70,80,90"
+    calibration_min_samples: int = Field(default=30, ge=1)
     tradingview_webhook_enabled: bool = False
     tradingview_webhook_secret: str | None = None
+
+    @model_validator(mode="after")
+    def anchor_sqlite_path(self) -> Settings:
+        prefix = "sqlite:///"
+        path = self.database_url.removeprefix(prefix)
+        if (
+            self.database_url.startswith(prefix)
+            and path
+            and path != ":memory:"
+            and not path.startswith("/")
+        ):
+            self.database_url = prefix + str((PROJECT_ROOT / path).resolve())
+        return self
 
     @model_validator(mode="after")
     def validate_scanner(self) -> "Settings":
@@ -172,7 +209,27 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Enabled TradingView webhook requires a secret of at least 24 characters"
             )
+        if not self.calibration_band_edges:  # The property validates the band list.
+            raise ValueError("Calibration bands must not be empty")
         return self
+
+    @property
+    def calibration_band_edges(self) -> tuple[int, ...]:
+        edges = tuple(int(v) for v in self.calibration_bands.split(",") if v.strip())
+        if (
+            not edges
+            or list(edges) != sorted(set(edges))
+            or not 0 <= edges[0] <= edges[-1] <= 100
+        ):
+            raise ValueError("Calibration bands must be increasing scores within 0-100")
+        return edges
+
+    def outcome_max_bars(self, timeframe: str) -> int:
+        return {
+            "15m": self.outcome_max_bars_15m,
+            "1h": self.outcome_max_bars_1h,
+            "4h": self.outcome_max_bars_4h,
+        }[timeframe]
 
     @property
     def tzinfo(self) -> ZoneInfo:

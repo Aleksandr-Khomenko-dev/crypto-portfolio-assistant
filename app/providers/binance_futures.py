@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -44,6 +45,8 @@ def request_weight(path: str, params: dict[str, Any] | None) -> int:
 class BinanceFuturesProvider:
     """Reusable public GET client, paced globally with incremental closed-bar caching."""
 
+    exchange = "BINANCE"
+
     def __init__(
         self, settings: Settings, http_client: httpx.AsyncClient | None = None
     ) -> None:
@@ -62,6 +65,8 @@ class BinanceFuturesProvider:
         self._bar_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._cache: dict[str, tuple[float, Any]] = {}
         self._bars: dict[tuple[str, str], list[Candle]] = {}
+        # Cumulative operational counters; the scanner records per-run deltas.
+        self.stats: Counter[str] = Counter()
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -73,8 +78,10 @@ class BinanceFuturesProvider:
                 weight = request_weight(path, params)
                 await self._budget.acquire(weight)
                 try:
+                    self.stats["requests"] += 1
                     response = await self.client.get(path, params=params)
                     if response.status_code in (418, 429):
+                        self.stats[f"http_{response.status_code}"] += 1
                         # Share the exchange's cooldown across all symbols, including queued requests.
                         try:
                             delay = max(
@@ -112,7 +119,9 @@ class BinanceFuturesProvider:
         async with self._cache_locks.setdefault(key, asyncio.Lock()):
             cached = self._cache.get(key)
             if cached and cached[0] > time.monotonic():
+                self.stats["cache_hits"] += 1
                 return cached[1]
+            self.stats["cache_misses"] += 1
             data = await self._get(path, params)
             now = time.monotonic()
             # Time-bucketed keys (e.g. openInterestHist endTime) must not accumulate forever.
@@ -185,6 +194,7 @@ class BinanceFuturesProvider:
         key = (symbol, timeframe)
         existing = self._bars.get(key, [])
         if existing and int(existing[-1].close_time.timestamp() * 1000) >= end_ms:
+            self.stats["candle_cache_hits"] += 1
             return [bar for bar in existing if bar.close_time <= timestamp(end_ms)]
         params: dict[str, Any] = {
             "symbol": symbol,
@@ -198,6 +208,7 @@ class BinanceFuturesProvider:
             params["startTime"] = int(existing[-1].open_time.timestamp() * 1000)
         else:
             existing = []
+        self.stats["candle_cache_misses"] += 1
         payload = await self._get("/fapi/v1/klines", params)
         fresh = [
             Candle(
@@ -225,6 +236,37 @@ class BinanceFuturesProvider:
             raise ValueError("Exchange revised a previously closed candle")
         self._bars[key] = result
         return result
+
+    async def range_candles(
+        self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime
+    ) -> list[Candle]:
+        """Closed candles fully inside [start, end]; used for bounded ambiguity replay."""
+        payload = await self._get(
+            "/fapi/v1/klines",
+            {
+                "symbol": symbol,
+                "interval": timeframe,
+                "startTime": int(start.timestamp() * 1000),
+                "endTime": int(end.timestamp() * 1000),
+                "limit": 99,
+            },
+        )
+        return [
+            candle
+            for candle in (
+                Candle(
+                    open_time=timestamp(r[0]),
+                    close_time=timestamp(r[6]),
+                    open=r[1],
+                    high=r[2],
+                    low=r[3],
+                    close=r[4],
+                    volume=r[5],
+                )
+                for r in payload
+            )
+            if candle.open_time >= start and candle.close_time <= end
+        ]
 
     async def _funding(self, symbol: str) -> dict[str, Any]:
         # One weight-10 request serves every symbol instead of one request per market.

@@ -40,13 +40,13 @@ _scanner_runtime: ScannerRuntime | None = None
 
 
 def get_scanner_runtime() -> ScannerRuntime:
-    from app.providers.binance_futures import BinanceFuturesProvider
+    from app.providers.futures_factory import create_futures_provider
     from app.services.scanner_service import ScannerRuntime
 
     global _scanner_runtime
     if _scanner_runtime is None:
         settings = get_settings()
-        _scanner_runtime = ScannerRuntime(BinanceFuturesProvider(settings), settings)
+        _scanner_runtime = ScannerRuntime(create_futures_provider(settings), settings)
     return _scanner_runtime
 
 

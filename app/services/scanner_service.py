@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.engine import Engine
@@ -19,8 +20,10 @@ from app.scanner.domain import (
     Derivatives,
     FrameAnalysis,
     MarketContext,
+    Readiness,
     RunRead,
     ScannerResult,
+    StaleDataError,
     Timeframe,
 )
 from app.scanner.locking import database_scan_lock
@@ -28,8 +31,23 @@ from app.scanner.notifications import deliver_notifications
 from app.scanner.repository import ScannerRepository
 from app.scanner.scoring import build_result
 from app.scanner.universe import filter_universe
+from app.services.outcome_service import OutcomeService
 
 logger = logging.getLogger(__name__)
+TELEMETRY_KEYS = (
+    "requests",
+    "http_429",
+    "http_418",
+    "cache_hits",
+    "cache_misses",
+    "candle_cache_hits",
+    "candle_cache_misses",
+    "stale_data_skips",
+    "market_failures",
+    "ready_setups",
+    "outcomes_updated",
+    "outcomes_completed",
+)
 TIMEFRAMES: tuple[Timeframe, ...] = ("15m", "1h", "4h")
 
 
@@ -111,16 +129,25 @@ class ScannerService:
 
     async def _run(self, now: datetime) -> RunRead:
         started = time.monotonic()
+        exchange = self.provider.exchange
         config = {
             k: v
             for k, v in self.settings.model_dump(mode="json").items()
-            if (k.startswith("scanner_") or k == "fvg_min_atr")
-            and k != "scanner_telegram_chat_id"
+            if (
+                k.startswith(("scanner_", "outcome_", "calibration_"))
+                or k == "fvg_min_atr"
+            )
+            and k != "scanner_telegram_chat_id"  # no delivery destinations in history
         }
+        config["exchange"] = exchange
         # Reload durable checkpoints after a restart; end read transactions before HTTP.
+        # Checkpoints from another exchange are never reused (no cross-exchange mixing).
         previous_run = self.repository.last_run()
         context_seed = (
-            previous_run.config_json.get("context_frames", {}) if previous_run else {}
+            previous_run.config_json.get("context_frames", {})
+            if previous_run
+            and previous_run.config_json.get("exchange", "BINANCE") == exchange
+            else {}
         )
         for symbol, frames in context_seed.items():
             self.runtime.frame_history.setdefault(
@@ -131,8 +158,15 @@ class ScannerService:
         self.session.add(run)
         self.session.commit()
         run_id = run.id
-        logger.info("Scanner start run=%s", run.id)
+        logger.info(
+            "Scanner start run=%s exchange=%s dry_run=%s",
+            run_id,
+            exchange,
+            self.settings.scanner_dry_run,
+        )
         errors: dict[str, str] = {}
+        telemetry: Counter[str] = Counter()
+        provider_before = Counter(getattr(self.provider, "stats", {}))
         try:
             universe_data = await asyncio.gather(
                 self.provider.contracts(),
@@ -151,7 +185,7 @@ class ScannerService:
                 # Once per process: this window query scans all snapshot history.
                 self.runtime.seeded = True
                 for previous in self.repository.latest_results(
-                    limit=self.settings.scanner_max_markets + 2
+                    limit=self.settings.scanner_max_markets + 2, exchange=exchange
                 ):
                     self.runtime.frame_history.setdefault(
                         previous.symbol, previous.frames
@@ -222,7 +256,7 @@ class ScannerService:
                                     symbol,
                                     type(exc).__name__,
                                 )
-                        return build_result(
+                        result = build_result(
                             symbol,
                             frames,
                             derivatives,
@@ -231,8 +265,15 @@ class ScannerService:
                             observed_at,
                             self.settings,
                         )
+                        result.exchange = exchange
+                        return result
                     except Exception as exc:  # noqa: BLE001 - isolate providers; log only safe error types
                         errors[symbol] = type(exc).__name__
+                        telemetry[
+                            "stale_data_skips"
+                            if isinstance(exc, StaleDataError)
+                            else "market_failures"
+                        ] += 1
                         logger.warning(
                             "Scanner market failed symbol=%s error=%s",
                             symbol,
@@ -261,6 +302,9 @@ class ScannerService:
                         s.score >= self.settings.scanner_high_score
                         for s in result.setups
                     )
+                    telemetry["ready_setups"] += sum(
+                        s.readiness == Readiness.READY for s in result.setups
+                    )
                     self.session.commit()
                 except Exception as exc:  # noqa: BLE001 - isolate providers; log only safe error types
                     self.session.rollback()
@@ -272,6 +316,22 @@ class ScannerService:
                         result.symbol,
                         type(exc).__name__,
                     )
+            try:
+                telemetry.update(
+                    await OutcomeService(
+                        self.session, self.provider, self.settings
+                    ).process(
+                        now,
+                        {
+                            (symbol, "15m"): bars
+                            for symbol, bars in validation_bars.items()
+                        },
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - research tracking must not fail the scan
+                self.session.rollback()
+                errors["outcomes"] = type(exc).__name__
+                logger.warning("Outcome tracking failed error=%s", type(exc).__name__)
             self.repository.expire(now + timedelta(seconds=time.monotonic() - started))
             run.status = "PARTIAL" if errors else "COMPLETED"
         except asyncio.CancelledError:
@@ -287,17 +347,40 @@ class ScannerService:
             errors["run"] = type(exc).__name__
             logger.warning("Scanner run failed error=%s", type(exc).__name__)
         finally:
+            provider_after = Counter(getattr(self.provider, "stats", {}))
+            provider_after.subtract(provider_before)
+            telemetry.update(+provider_after)
+            run.telemetry = {
+                "markets_requested": run.universe_size,
+                "markets_analyzed": run.analyzed,
+                "markets_failed": run.failed,
+                "high_confluence": run.high_confluence,
+                "dry_run": self.settings.scanner_dry_run,
+                "exchange": exchange,
+                **{k: telemetry.get(k, 0) for k in TELEMETRY_KEYS},
+                **telemetry,
+            }
             run.errors = errors
             run.completed_at = datetime.now(UTC)
             run.duration_seconds = time.monotonic() - started
             self.session.commit()
             logger.info(
-                "Scanner complete status=%s analyzed=%s failed=%s high_confluence=%s elapsed=%.2fs",
+                "Scanner complete status=%s analyzed=%s failed=%s high_confluence=%s elapsed=%.2fs telemetry=%s",
                 run.status,
                 run.analyzed,
                 run.failed,
                 run.high_confluence,
                 run.duration_seconds,
+                run.telemetry,
             )
-        await deliver_notifications(self.session, self.settings, now)
+        if self.settings.scanner_send_telegram:
+            try:
+                sent = await deliver_notifications(self.session, self.settings, now)
+                if sent:
+                    logger.info("Scanner Telegram alerts delivered=%s", sent)
+            except Exception as exc:  # noqa: BLE001 - alerts must never fail a persisted scan
+                self.session.rollback()
+                logger.warning(
+                    "Scanner Telegram delivery failed error=%s", type(exc).__name__
+                )
         return RunRead.model_validate(run)

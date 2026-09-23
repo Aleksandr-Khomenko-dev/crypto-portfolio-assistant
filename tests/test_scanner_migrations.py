@@ -35,9 +35,24 @@ def test_migration_chain_and_preserved_portfolio_data(tmp_path):
         assert (
             connection.execute("SELECT count(*) FROM scanner_runs").fetchone()[0] == 0
         )
+        assert connection.execute("SELECT count(*) FROM setup_outcomes").fetchone()
+        columns = [r[1] for r in connection.execute("PRAGMA table_info(scanner_runs)")]
+        assert "telemetry" in columns
+        setup_columns = [
+            r[1] for r in connection.execute("PRAGMA table_info(market_setups)")
+        ]
+        assert "exchange" in setup_columns
     migrate("downgrade", "-1")
     with closing(sqlite3.connect(path)) as connection:
+        setup_columns = [
+            r[1] for r in connection.execute("PRAGMA table_info(market_setups)")
+        ]
+        assert "exchange" not in setup_columns
+    migrate("downgrade", "20260923_0004_scanner")
+    with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT symbol FROM assets").fetchall() == [("KEEP",)]
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master")}
+        assert "setup_outcomes" not in tables and "market_setups" in tables
     migrate("upgrade", "head")
 
 
@@ -68,5 +83,5 @@ def test_unversioned_upgrade_requires_validation_and_makes_backup(tmp_path):
     with closing(sqlite3.connect(path)) as connection:
         assert (
             connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            == "20260923_0004_scanner"
+            == "20260923_0006_exchange"
         )

@@ -4,6 +4,8 @@ from html import escape
 
 from app.scanner.domain import ScannerResult, Setup, SetupRead
 
+EXCHANGE_NAMES = {"BINGX": "BingX", "BINANCE": "Binance"}
+
 
 def format_ranking(setups: list[SetupRead], title: str) -> str:
     lines = [
@@ -39,6 +41,7 @@ def format_setup(setup: Setup, result: ScannerResult, lifecycle: str = "ACTIVE")
         [
             f"<b>{escape(setup.state)} {setup.direction} WATCH · {escape(lifecycle)}</b>",
             f"<b>{escape(setup.symbol)}</b>",
+            f"Exchange: {escape(EXCHANGE_NAMES.get(result.exchange, result.exchange))}",
             f"Score: {setup.score} / 100 model confluence points",
             "Not a probability of success.",
             f"4H trend: {result.frames['4h'].technical.alignment}",

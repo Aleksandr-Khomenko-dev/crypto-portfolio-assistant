@@ -93,10 +93,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analytics_router, prefix=prefix)
     app.include_router(chart_router, prefix=prefix)
     app.include_router(admin_router, prefix=prefix)
+    from app.api.routers.research import router as research_router
     from app.api.routers.scanner import router as scanner_router
     from app.api.routers.tradingview import router as tradingview_router
 
     app.include_router(scanner_router, prefix=prefix)
+    app.include_router(research_router, prefix=prefix)
     app.include_router(tradingview_router, prefix=prefix)
     if _STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")

@@ -7,12 +7,20 @@ from app.scanner.domain import Candle, Contract, Derivatives, Ticker, Timeframe
 
 
 class FuturesProvider(Protocol):
-    """Public data only. Implementations never accept credentials or execute orders."""
+    """Public data only. Implementations never accept credentials or execute orders.
+
+    Symbols are canonical (``BTCUSDT``); each adapter converts to its exchange format.
+    """
+
+    exchange: str  # e.g. "BINGX"; stored on results, setups and outcomes
 
     async def contracts(self) -> list[Contract]: ...
     async def tickers(self) -> dict[str, Ticker]: ...
     async def candles(
         self, symbol: str, timeframe: Timeframe, now: datetime
+    ) -> list[Candle]: ...
+    async def range_candles(
+        self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime
     ) -> list[Candle]: ...
     async def derivatives(self, symbol: str, now: datetime) -> Derivatives: ...
     async def aclose(self) -> None: ...

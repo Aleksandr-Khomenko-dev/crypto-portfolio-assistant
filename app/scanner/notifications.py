@@ -45,12 +45,24 @@ def should_notify(setup: MarketSetup, now: datetime, settings: Settings) -> bool
     )
 
 
+DRY_RUN_LABEL = "🧪 DRY RUN — research data collection.\nNot a live trading signal."
+
+
 async def deliver_notifications(
-    session: Session, settings: Settings, now: datetime
-) -> None:
+    session: Session, settings: Settings, now: datetime, label: str | None = None
+) -> int:
+    """Send due scanner alerts; returns how many Telegram accepted.
+
+    `label` prefixes every message (integration tests, dry runs)."""
     telegram = TelegramService(settings)
     if not telegram.enabled or not settings.scanner_telegram_chat_id:
-        return
+        logger.info(
+            "Scanner Telegram delivery skipped: CPDA_TELEGRAM_BOT_TOKEN or "
+            "CPDA_SCANNER_TELEGRAM_CHAT_ID is not set"
+        )
+        return 0
+    if label is None and settings.scanner_dry_run:
+        label = DRY_RUN_LABEL
     rows = list(
         session.scalars(
             select(MarketSetup)
@@ -78,17 +90,22 @@ async def deliver_notifications(
         )
         if setup.initial_invalidation is not None:
             message += f"\nEpisode invalidation (fixed): {escape(str(setup.initial_invalidation))}"
+        if label:
+            message = f"<b>{escape(label)}</b>\n\n{message}"
         pending.append((setup.id, message))
         if len(pending) >= settings.scanner_alerts_per_run:
             break
     session.commit()  # Release reads before waiting for Telegram or its pacing delay.
+    accepted = 0
     for index, (setup_id, message) in enumerate(pending):
         if index:
             await asyncio.sleep(settings.scanner_telegram_interval_seconds)
         sent, error, retry = False, None, None
         try:
-            sent = await telegram.send_scanner(
-                settings.scanner_telegram_chat_id, message
+            # Bounded wait: a hung request must not hold the scan lock indefinitely.
+            sent = await asyncio.wait_for(
+                telegram.send_scanner(settings.scanner_telegram_chat_id, message),
+                timeout=settings.http_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001 - never log token-bearing exception URLs
             error = type(exc).__name__
@@ -101,6 +118,7 @@ async def deliver_notifications(
         old = setup.notified_data or {}
         setup.delivery_error = error
         if sent:
+            accepted += 1
             setup.last_notified_at = now
             peak_state = max(
                 (setup.state, old.get("peak_state", old.get("state", "IGNORE"))),
@@ -137,5 +155,25 @@ async def deliver_notifications(
                     now + timedelta(seconds=delay)
                 ).isoformat()
         session.commit()
+        logger.info(
+            "Scanner Telegram alert symbol=%s direction=%s lifecycle=%s sent=%s error=%s",
+            setup.symbol,
+            setup.direction,
+            setup.lifecycle,
+            sent,
+            error,
+        )
         if retry is not None:
-            break  # A chat-level flood limit applies to the rest of this batch too.
+            # A flood limit applies to the whole bot/chat: defer the rest of the batch
+            # too, so the next cycle cannot immediately hit the limit again.
+            retry_at = setup.notified_data["retry_at"]
+            for later_id, _ in pending[index + 1 :]:
+                later = session.get(MarketSetup, later_id)
+                if later is not None:
+                    later.notified_data = {
+                        **(later.notified_data or {}),
+                        "retry_at": retry_at,
+                    }
+            session.commit()
+            break
+    return accepted

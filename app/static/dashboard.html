@@ -777,6 +777,17 @@ tbody tr:hover .row-act{opacity:1}
         <tbody id="scannerBody"></tbody>
       </table></div>
     </div>
+    <div class="tbl-wrap" style="margin-top:16px">
+      <div class="tbl-header">
+        <div><div class="tbl-title">Research · Score calibration</div>
+          <p style="color:var(--muted2);margin-top:8px">Historical observed rates of setup outcomes (target touched before −1R invalidation). Not trades and not probabilities. Ambiguous same-bar and expired setups are excluded from rates.</p></div>
+      </div>
+      <p id="researchStatus" role="status" style="padding:12px 16px;color:var(--muted2)">Loading research…</p>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Score band</th><th>Sample size</th><th>+1R first</th><th>+2R first</th><th>Avg MFE</th><th>Avg MAE</th><th>Ambiguous</th><th>Expired</th></tr></thead>
+        <tbody id="researchBody"></tbody>
+      </table></div>
+    </div>
   </div>
 </div><!-- /main -->
 
@@ -2006,7 +2017,7 @@ async function loadScanner() {
   try {
     const [status, rows] = await Promise.all([call("/scanner/status"), call("/scanner/snapshots")]);
     const run = status.last_run;
-    statusEl.textContent = `${status.enabled ? "Enabled" : "Disabled"} · ${status.running ? "Scanning…" : run ? `${run.status}: ${run.analyzed}/${run.universe_size} analyzed, ${run.failed} failed · ${run.duration_seconds.toFixed(1)}s` : "No scans yet"}`;
+    statusEl.textContent = `${status.enabled ? "Enabled" : "Disabled"} · ${status.running ? "Scanning…" : run ? `${run.status}: ${run.analyzed}/${run.universe_size} analyzed, ${run.failed} failed · ${run.duration_seconds.toFixed(1)}s${run.telemetry?.dry_run ? " · dry run" : ""}${run.telemetry ? ` · ${run.telemetry.ready_setups ?? 0} READY · 429s ${run.telemetry.http_429 ?? 0} · stale skips ${run.telemetry.stale_data_skips ?? 0}` : ""}` : "No scans yet"}`;
     document.getElementById("btnScannerRun").disabled = !status.enabled || status.running;
     const body = document.getElementById("scannerBody");
     body.replaceChildren();
@@ -2027,6 +2038,32 @@ async function loadScanner() {
     }
     if (!rows.length) { const tr = body.insertRow(); const td = tr.insertCell(); td.colSpan = 13; td.textContent = "No scanner results yet."; }
   } catch (error) { statusEl.textContent = "Scanner unavailable: " + error.message; }
+  await loadResearch();
+}
+
+async function loadResearch() {
+  const statusEl = document.getElementById("researchStatus");
+  const body = document.getElementById("researchBody");
+  try {
+    const report = await call("/research/calibration");
+    const bands = report.groups.flatMap(g => g.bands);
+    const total = bands.reduce((n, b) => n + b.sample_count, 0);
+    statusEl.textContent = `${total} completed setup outcomes · ${report.tracking_count} still tracking · bands under ${report.min_samples} samples are too small for conclusions`;
+    body.replaceChildren();
+    const rate = (b, label) => {
+      const t = b.targets.find(x => x.target === label);
+      return t && t.observed_rate != null ? `${(t.observed_rate * 100).toFixed(0)}% (of ${t.resolved})` : "n/a";
+    };
+    const r = v => v == null ? "n/a" : v.toFixed(2) + "R";
+    for (const b of bands) {
+      const tr = document.createElement("tr");
+      const values = [b.band, b.sample_count + (b.low_sample ? " ⚠ small" : ""), rate(b, "+1R"), rate(b, "+2R"),
+        r(b.avg_mfe_r), r(b.avg_mae_r), b.ambiguous_count, b.expired_count];
+      for (const value of values) { const td = document.createElement("td"); td.textContent = value; tr.appendChild(td); }
+      body.appendChild(tr);
+    }
+    if (!bands.length) { const tr = body.insertRow(); const td = tr.insertCell(); td.colSpan = 8; td.textContent = "No completed setup outcomes yet."; }
+  } catch (error) { statusEl.textContent = "Research unavailable: " + error.message; }
 }
 
 document.getElementById("btnScannerRun").onclick = async () => {

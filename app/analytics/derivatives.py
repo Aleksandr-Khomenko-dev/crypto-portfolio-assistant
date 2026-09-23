@@ -6,6 +6,13 @@ from decimal import Decimal
 from app.scanner.domain import Candle, Derivatives
 
 
+def funding_8h_equivalent(rate: Decimal, interval_hours: int | None) -> Decimal:
+    """`extreme` is defined per 8h; a 1h contract's 0.01% is 0.08% per 8h.
+
+    An unknown interval keeps the rate as reported (the historical behaviour)."""
+    return rate * 8 / interval_hours if interval_hours else rate
+
+
 def normalize_derivatives(
     data: Derivatives, bars: list[Candle], extreme: Decimal, now: datetime | None = None
 ) -> Derivatives:
@@ -27,10 +34,11 @@ def normalize_derivatives(
         data = result
 
     if data.funding_rate is not None and data.funding_rate.is_finite():
+        rate = funding_8h_equivalent(data.funding_rate, data.funding_interval_hours)
         result.funding_state = (
             "CROWDED_LONG"
-            if data.funding_rate >= extreme
-            else ("CROWDED_SHORT" if data.funding_rate <= -extreme else "NEUTRAL")
+            if rate >= extreme
+            else ("CROWDED_SHORT" if rate <= -extreme else "NEUTRAL")
         )
     # Pair OI and price over the same completed 15m interval. Never mix current OI with an old close.
     closes = {b.open_time + timedelta(minutes=15): b.close for b in bars}

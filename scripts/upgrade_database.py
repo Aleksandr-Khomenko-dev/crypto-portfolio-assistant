@@ -23,11 +23,13 @@ from app.db import models  # noqa: F401
 from app.db.base import Base
 
 BASELINE = "20260406_0003_price_alerts"
+# Tables created by migrations after the baseline; absent from legacy installs.
 SCANNER_TABLES = {
     "scanner_runs",
     "scanner_snapshots",
     "market_setups",
     "tradingview_events",
+    "setup_outcomes",
 }
 
 

@@ -389,8 +389,51 @@ Run **one scheduler/API worker**: cache and overlap protection are process-local
 
 These are configurable heuristics, not calibrated probabilities or profitability claims. Pivot confirmation deliberately lags; EMA initialization uses an SMA seed and finite history. R:R uses observed zones and excludes fees, spread, slippage and funding costs. New markets without 210 closed bars on each timeframe are skipped. Zone interactions are descriptive, not an automatic strength score. OI relationships are possible interpretations, not proof of trader intent.
 
-On-chain, macro and news/fundamental providers are explicitly unavailable. No position sizing, historical outcome evaluation, calibration, distributed locking or scanner-history retention policy is implemented. Funding is a fractional per-interval value; OI is base-asset quantity, not USD. A current ticker is stored separately from the confirmed 15m reference price. Setup episodes pin their original invalidation and expiry; later snapshots preserve newly calculated risk plans. Invalidation currently requires a closed 15m price through the episode's original level.
+On-chain, macro and news/fundamental providers are explicitly unavailable. No position sizing, execution simulation, distributed locking or scanner-history retention policy is implemented. Setup outcomes (below) measure price paths from a reference close; they are not trades. Funding is a fractional per-interval value; OI is base-asset quantity, not USD. A current ticker is stored separately from the confirmed 15m reference price. Setup episodes pin their original invalidation and expiry; later snapshots preserve newly calculated risk plans. Invalidation currently requires a closed 15m price through the episode's original level.
 
 The public adapter follows [Binance USDⓈ-M market-data documentation](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data). Regional API availability and live delivery remain environment-dependent; validation uses mocks.
+
+## Setup outcome research (calibration dataset)
+
+Every setup episode that first reaches `READY` on a closed 15m candle starts one outcome record. Entry reference = that candle's close; −1R = the invalidation frozen at READY; +0.5R/+1R/+1.5R/+2R targets are stored at creation and never recomputed. Each later closed candle's high/low is evaluated until invalidation, +2R or the bar horizon. A candle touching both a target and invalidation is `AMBIGUOUS` unless complete 5m candles inside it resolve the order; ambiguous and expired setups are excluded from rates and reported as counts.
+
+Calibration groups completed outcomes by score band (60–69, 70–79, 80–89, 90–100) and reports **historical observed rates** — never probabilities. Bands below `CPDA_CALIBRATION_MIN_SAMPLES` are flagged as too small. Scoring weights are unchanged by this data.
+
+- API: `GET /api/research/outcomes`, `/api/research/calibration[?group_by=direction,asset_class]`, `/api/research/calibration/{symbol}`, `/api/research/setup/{setup_id}/outcome`; filters `direction`, `symbol`, `score_min`, `score_max`, `regime`, `timeframe`.
+- Telegram (on demand only): `/performance`, `/performance ARB`, `/calibration`.
+- Dashboard: Scanner tab → Research · Score calibration.
+
+### 24/7 dry-run collection
+
+```bash
+python -m alembic upgrade head          # or: python -m scripts.upgrade_database
+export CPDA_SCANNER_DRY_RUN=true CPDA_SCANNER_SEND_TELEGRAM=false
+python -m app.scanner.runner --once     # smoke test: one cycle
+mkdir -p logs && nohup python -m app.scanner.runner >> logs/scanner.log 2>&1 &
+```
+
+The runner uses public Binance USDⓈ-M endpoints only, runs just the scanner and outcome tracker (no portfolio jobs, no bot polling), logs per-cycle telemetry and stops cleanly on SIGINT/SIGTERM. Do not run it alongside the API scheduler against the same database; the scan lock would make one of them skip cycles. Definitions: [outcome tracker notes](docs/outcome-tracker.md).
+
+### Exchange provider (BingX by default)
+
+`CPDA_SCANNER_PROVIDER=bingx` (default) or `binance` selects the single exchange for a run: universe, tickers, candles, BTC/ETH context, funding, OI and outcome tracking all come from it. Snapshots and setup episodes record `exchange`; episodes, checkpoints and outcomes never cross exchanges. BingX adapter facts (verified against the live public API):
+
+- Public endpoints, no API key: `/openApi/swap/v2/quote/contracts`, `/quote/ticker` (bulk), `/openApi/swap/v3/quote/klines`, `/quote/premiumIndex` (bulk current funding, next funding time, per-contract interval 1h/4h/8h), `/quote/openInterest` (per symbol), `/openApi/swap/v2/server/time`. The `fundingRate` endpoint returns settled history, so current funding comes from `premiumIndex`.
+- Symbols are canonical internally (`BTCUSDT`) and converted only in the adapter (`BTC-USDT`). Tradable = status 1 and `apiStateOpen`; `NCSK/NCFX/NCCO/NCSI` TradFi contracts and USDC contracts are excluded.
+- Klines come newest-first with open time only and include the forming candle; close = open + interval − 1 ms and only candles closed before the grace cutoff are used.
+- Open interest is **USDT notional**; base quantity is derived as notional ÷ same-cycle mark price. BingX has no public OI history, so OI-change interpretation is unavailable (0 of the 6 "constructive OI" points).
+- Funding is classified on an 8h-equivalent rate (`rate × 8 / interval_hours`).
+- One shared limiter: 250 requests / 10 s (BingX reports 500), cooldown on 429/418 or rate-limit code 100410, and a pause when `x-ratelimit-requests-remain` is nearly exhausted.
+
+### Scanner Telegram alerts
+
+Required: `CPDA_TELEGRAM_BOT_TOKEN` (bot token, keep it in `.env` only) and `CPDA_SCANNER_TELEGRAM_CHAT_ID` (recipient chat). `CPDA_SCANNER_SEND_TELEGRAM=false` suppresses scanner pushes; with `CPDA_SCANNER_DRY_RUN=true` pushes still go out but are prefixed "🧪 DRY RUN". Portfolio alerts use each portfolio's own chat id and are unaffected.
+
+Pushes follow the existing rules: an ACTIVE setup with score ≥ `CPDA_SCANNER_ALERT_SCORE` (80, i.e. HIGH/EXTREME confluence) alerts once, then again only after `CPDA_SCANNER_COOLDOWN_MINUTES` (60) for a higher state or +`CPDA_SCANNER_SCORE_DELTA` score; a first READY transition of an already-alerted setup bypasses the cooldown once; INVALIDATED/EXPIRED is pushed only for setups that were alerted. WATCH/SETUP_FORMING never push.
+
+```bash
+python -m app.telegram.smoke_test           # one connectivity message; prints message_id only
+python -m app.telegram.scanner_smoke_test   # injected READY test alert via the real alert path (temp DB)
+```
 
 See [implementation and verification notes](docs/scanner-implementation.md) for the file inventory, audit findings and check results.

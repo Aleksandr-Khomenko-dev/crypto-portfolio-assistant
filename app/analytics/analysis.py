@@ -9,7 +9,13 @@ from app.analytics.levels import fair_value_gaps, zones
 from app.analytics.structure import structure
 from app.analytics.technical import technical
 from app.config import Settings
-from app.scanner.domain import INTERVAL_SECONDS, Candle, FrameAnalysis, Timeframe
+from app.scanner.domain import (
+    INTERVAL_SECONDS,
+    Candle,
+    FrameAnalysis,
+    StaleDataError,
+    Timeframe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +46,7 @@ def analyze_frame(
     if (
         now - closed[-1].close_time
     ).total_seconds() > interval + settings.scanner_data_grace_seconds + 1:
-        raise ValueError("Stale candle history")
+        raise StaleDataError("Stale candle history")
     if any(
         (b.open_time - a.open_time).total_seconds() != interval
         for a, b in pairwise(closed)

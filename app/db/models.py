@@ -22,7 +22,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 # Register scanner metadata for init_db and Alembic.
-from app.db.scanner_models import MarketSetup, ScannerRun, ScannerSnapshot, TradingViewEvent  # noqa: F401
+from app.db.scanner_models import (  # noqa: F401
+    MarketSetup,
+    ScannerRun,
+    ScannerSnapshot,
+    SetupOutcome,
+    TradingViewEvent,
+)
 
 
 def utc_now() -> datetime:

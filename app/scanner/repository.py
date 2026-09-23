@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db.scanner_models import MarketSetup, ScannerRun, ScannerSnapshot
+from app.research.repository import start_outcome
 from app.scanner.domain import Candle, Direction, ScannerResult, SetupRead, SignalState
 
 
@@ -44,6 +45,7 @@ class ScannerRepository:
         snapshot = ScannerSnapshot(
             run_id=run_id,
             symbol=result.symbol,
+            exchange=result.exchange,
             created_at=result.created_at,
             candle_closed_at=result.candle_closed_at,
             long_score=result.long_score,
@@ -56,6 +58,7 @@ class ScannerRepository:
             previous = self.session.scalar(
                 select(MarketSetup)
                 .where(
+                    MarketSetup.exchange == result.exchange,
                     MarketSetup.symbol == result.symbol,
                     MarketSetup.direction == candidate.direction,
                 )
@@ -98,14 +101,18 @@ class ScannerRepository:
                     candidate.model_dump(mode="json"),
                     result.created_at,
                 )
+                start_outcome(self.session, previous.id, candidate, result, snapshot.id)
             elif candidate.score >= settings.scanner_watch_score:
                 # A terminal episode must not immediately resurrect from the same closed bar.
                 if previous and result.candle_closed_at <= utc(previous.updated_at):
                     continue
+                setup_id = uuid4()
                 self.session.add(
                     MarketSetup(
+                        id=setup_id,
                         snapshot_id=snapshot.id,
                         symbol=result.symbol,
+                        exchange=result.exchange,
                         direction=candidate.direction,
                         score=candidate.score,
                         state=candidate.state,
@@ -121,6 +128,7 @@ class ScannerRepository:
                         else None,
                     )
                 )
+                start_outcome(self.session, setup_id, candidate, result, snapshot.id)
         self.session.flush()
 
     def setups(
@@ -158,14 +166,18 @@ class ScannerRepository:
                 expires_at=utc(row.expires_at),
                 lifecycle=row.lifecycle,
                 episode_invalidation=row.initial_invalidation,
+                exchange=row.exchange,
             )
             for row in rows
         ]
 
     def latest_results(
-        self, symbol: str | None = None, limit: int = 100
+        self,
+        symbol: str | None = None,
+        limit: int = 100,
+        exchange: str | None = None,
     ) -> list[ScannerResult]:
-        ranked = select(
+        latest_per_symbol = select(
             ScannerSnapshot.id,
             func.row_number()
             .over(
@@ -173,7 +185,12 @@ class ScannerRepository:
                 order_by=ScannerSnapshot.created_at.desc(),
             )
             .label("rank"),
-        ).subquery()
+        )
+        if exchange:
+            latest_per_symbol = latest_per_symbol.where(
+                ScannerSnapshot.exchange == exchange
+            )
+        ranked = latest_per_symbol.subquery()
         query = (
             select(ScannerSnapshot)
             .join(ranked, ranked.c.id == ScannerSnapshot.id)
@@ -188,17 +205,19 @@ class ScannerRepository:
         )
         results = [ScannerResult.model_validate(row.data) for row in rows]
         # Expose live episode status alongside immutable research snapshots.
-        latest: dict[tuple[str, str], MarketSetup] = {}
+        latest: dict[tuple[str, str, str], MarketSetup] = {}
         for setup in self.session.scalars(
             select(MarketSetup)
             .where(MarketSetup.symbol.in_([r.symbol for r in results]))
             .order_by(MarketSetup.created_at.desc())
         ):
-            latest.setdefault((setup.symbol, setup.direction), setup)
+            latest.setdefault((setup.exchange, setup.symbol, setup.direction), setup)
         now = datetime.now(UTC)
         for result in results:
             for candidate in result.setups:
-                episode = latest.get((result.symbol, candidate.direction))
+                episode = latest.get(
+                    (result.exchange, result.symbol, candidate.direction)
+                )
                 state = "NOT_TRACKED"
                 if episode is not None:
                     state = (

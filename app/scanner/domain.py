@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -38,6 +38,10 @@ BreakKind = Literal["BOS", "CHoCH", "INITIAL_BREAK"]
 FVGStatus = Literal[
     "FRESH", "PARTIALLY_MITIGATED", "CE_TOUCHED", "FILLED", "INVALIDATED"
 ]
+
+
+class StaleDataError(ValueError):
+    """Closed-candle history is older than one interval plus grace."""
 
 
 Timeframe = Literal["5m", "15m", "1h", "4h", "1d"]
@@ -92,10 +96,16 @@ class OIPoint(BaseModel):
 class Derivatives(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, validate_assignment=True)
     funding_rate: Decimal | None = None  # Fraction per funding interval, not percent.
-    funding_timestamp: AwareDatetime | None = None
+    funding_timestamp: AwareDatetime | None = None  # When the value was observed.
+    # Exchanges settle every 1h/4h/8h per contract. Known intervals are normalized to
+    # an 8h-equivalent rate for classification; None means the interval is unknown.
+    funding_interval_hours: int | None = Field(default=None, gt=0)
+    next_funding_at: AwareDatetime | None = None
     open_interest: Decimal | None = Field(
         default=None, ge=0
     )  # Base-asset quantity, not USD notional.
+    # Quote-currency (USDT) notional as reported by exchanges that publish OI that way.
+    open_interest_notional: Decimal | None = Field(default=None, ge=0)
     oi_timestamp: AwareDatetime | None = None
     history: list[OIPoint] = Field(default_factory=list)
     oi_change_pct: float | None = None
@@ -230,6 +240,9 @@ class ScannerResult(BaseModel):
         default_factory=lambda: ["on-chain", "macro", "news/fundamental"]
     )
     model_version: str = "scanner-v2"
+    # Every metric in one result comes from this exchange. Legacy snapshots predate
+    # BingX support and were produced from Binance.
+    exchange: str = "BINANCE"
     setup_lifecycles: dict[str, str] = Field(default_factory=dict)
 
 
@@ -245,6 +258,7 @@ class RunRead(BaseModel):
     high_confluence: int
     duration_seconds: float
     errors: dict[str, str]
+    telemetry: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScannerStatus(BaseModel):
@@ -261,3 +275,4 @@ class SetupRead(Setup):
     expires_at: datetime
     lifecycle: str
     episode_invalidation: Decimal | None = None
+    exchange: str = "BINANCE"
