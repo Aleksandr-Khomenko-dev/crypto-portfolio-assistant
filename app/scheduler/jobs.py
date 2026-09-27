@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,11 +27,10 @@ async def run_monitoring_job(run_reason: str = "scheduled-monitor") -> None:
 
 async def run_cleanup_job() -> None:
     settings = get_settings()
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        days=settings.price_snapshot_retention_days
-    )
+    cutoff = datetime.now(UTC) - timedelta(days=settings.price_snapshot_retention_days)
     with get_db_session() as session:
         from sqlalchemy import delete
+
         from app.db.models import PriceSnapshot
 
         result = session.execute(
@@ -94,6 +93,23 @@ def build_scheduler(settings: Settings | None = None) -> AsyncIOScheduler:
             max_instances=1,
             coalesce=True,
         )
+    if (
+        settings.scanner_enabled
+        and settings.oi_collection_enabled
+        and settings.scanner_provider == "bingx"
+    ):
+        from app.analytics.open_interest import next_boundary
+
+        scheduler.add_job(
+            run_oi_collection_job,
+            trigger=CronTrigger(minute="0,15,30,45", second=0, timezone=UTC),
+            next_run_time=next_boundary(datetime.now(UTC)),
+            id="oi-collector",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=max(1, int(settings.oi_snapshot_tolerance_seconds)),
+        )
     return scheduler
 
 
@@ -106,5 +122,17 @@ async def run_scanner_job() -> None:
             await ScannerService(session, get_scanner_runtime()).run()
     except ScannerBusyError:
         logger.info("Scanner job skipped: scan already in progress")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - scheduler must survive public endpoint failures
         logger.error("Scanner job failed error=%s", type(exc).__name__)
+
+
+async def run_oi_collection_job() -> None:
+    from app.analytics.open_interest import closed_boundary
+    from app.api.deps import get_scanner_runtime
+    from app.db.session import get_session_factory
+    from app.services.oi_collector_service import OICollectorService
+
+    runtime = get_scanner_runtime()
+    await OICollectorService(runtime, get_session_factory()).collect(
+        closed_boundary(datetime.now(UTC))
+    )

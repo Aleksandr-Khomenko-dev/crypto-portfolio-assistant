@@ -30,6 +30,18 @@ SCANNER_TABLES = {
     "market_setups",
     "tradingview_events",
     "setup_outcomes",
+    "open_interest_snapshots",
+    "news_items",
+    "news_entities",
+    "news_classifications",
+    "news_event_clusters",
+    "news_cluster_status",
+    "news_setup_links",
+    "news_alerts",
+    "fast_market_events",
+    "market_structure_episodes",
+    "pattern_candidates",
+    "early_event_outcomes",
 }
 
 

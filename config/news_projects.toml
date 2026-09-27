@@ -1,0 +1,283 @@
+# News COVERAGE metadata (public project facts only).
+#
+# coverage_tier is a NEWS MONITORING PRIORITY, never an investment rating.
+#   1 = established, highly liquid networks / core infrastructure
+#   2 = meaningful liquidity plus credible backing and ecosystem relevance
+# Projects not listed here (tier 3 / micro) are not monitored automatically; they can
+# still be linked when an official exchange notice names a symbol with an active setup.
+# Portfolio holdings are NEVER listed here: they come from the portfolio database.
+#
+# Matching rules: `aliases` and `organizations` are matched case-insensitively as whole
+# phrases. Tickers in `ambiguous_tickers` (common words) only match as a cashtag ($OP),
+# a pair (OPUSDT / OP-USDT), a parenthesised ticker "(OP)" or a provider symbol tag.
+
+version = "2026-09-24"
+ambiguous_tickers = [
+  "OP", "ONE", "GAS", "SUN", "TIME", "NEAR", "TON", "DOT", "LINK", "UNI", "ATOM",
+  "APT", "TIA", "ETC", "SOL", "ADA", "DOGE", "SEI", "FIL", "ICP", "ENS", "SAND",
+  "MANA", "FLOW", "ROSE", "GALA", "BLUR", "PEOPLE", "MASK", "HIGH", "ID", "MOVE", "S",
+]
+
+[[project]]
+symbol = "BTC"
+canonical_name = "Bitcoin"
+aliases = ["Bitcoin network", "Bitcoin Core"]
+organizations = []
+ecosystem_terms = ["Lightning Network"]
+indirect_terms = []
+coverage_tier = 1
+backer_tags = []
+theme_tags = ["store_of_value", "l1"]
+
+[[project]]
+symbol = "ETH"
+canonical_name = "Ethereum"
+aliases = ["Ethereum mainnet", "Ether"]
+organizations = ["Ethereum Foundation"]
+ecosystem_terms = ["Pectra", "Fusaka", "EIP-4844"]
+indirect_terms = ["Vitalik Buterin"]
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "SOL"
+canonical_name = "Solana"
+aliases = ["Solana network", "Solana mainnet"]
+organizations = ["Solana Foundation", "Solana Labs", "Anza"]
+ecosystem_terms = ["Firedancer"]
+indirect_terms = ["Anatoly Yakovenko"]
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "XRP"
+canonical_name = "XRP Ledger"
+aliases = ["XRPL"]
+organizations = ["Ripple Labs", "Ripple"]
+ecosystem_terms = ["RLUSD"]
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["corporate"]
+theme_tags = ["payments", "l1"]
+
+[[project]]
+symbol = "BNB"
+canonical_name = "BNB Chain"
+aliases = ["BNB Smart Chain", "BSC"]
+organizations = []
+ecosystem_terms = ["opBNB"]
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["exchange"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "DOGE"
+canonical_name = "Dogecoin"
+aliases = []
+organizations = ["Dogecoin Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["payments"]
+
+[[project]]
+symbol = "ADA"
+canonical_name = "Cardano"
+aliases = []
+organizations = ["Cardano Foundation", "Input Output Global", "IOHK", "Emurgo"]
+ecosystem_terms = []
+indirect_terms = ["Charles Hoskinson"]
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "AVAX"
+canonical_name = "Avalanche"
+aliases = ["Avalanche C-Chain"]
+organizations = ["Ava Labs", "Avalanche Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["foundation", "venture"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "LINK"
+canonical_name = "Chainlink"
+aliases = ["Chainlink CCIP"]
+organizations = ["Chainlink Labs", "Chainlink Foundation"]
+ecosystem_terms = []
+indirect_terms = ["Sergey Nazarov"]
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["oracles", "infrastructure"]
+
+[[project]]
+symbol = "TON"
+canonical_name = "Toncoin"
+aliases = ["TON blockchain", "The Open Network"]
+organizations = ["TON Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["l1"]
+
+[[project]]
+symbol = "DOT"
+canonical_name = "Polkadot"
+aliases = []
+organizations = ["Web3 Foundation", "Parity Technologies"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["interoperability", "l0"]
+
+[[project]]
+symbol = "LTC"
+canonical_name = "Litecoin"
+aliases = []
+organizations = ["Litecoin Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = ["foundation"]
+theme_tags = ["payments"]
+
+[[project]]
+symbol = "ARB"
+canonical_name = "Arbitrum"
+aliases = ["Arbitrum One", "Arbitrum DAO"]
+organizations = ["Arbitrum Foundation", "Offchain Labs"]
+ecosystem_terms = ["Arbitrum Orbit", "Arbitrum Nova", "Stylus"]
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["l2", "ethereum_scaling"]
+
+[[project]]
+symbol = "OP"
+canonical_name = "Optimism"
+aliases = ["OP Mainnet", "Optimism Collective"]
+organizations = ["Optimism Foundation", "OP Labs"]
+ecosystem_terms = ["OP Stack", "Superchain"]
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["l2", "ethereum_scaling"]
+
+[[project]]
+symbol = "SUI"
+canonical_name = "Sui"
+aliases = ["Sui Network"]
+organizations = ["Mysten Labs", "Sui Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "APT"
+canonical_name = "Aptos"
+aliases = ["Aptos Network"]
+organizations = ["Aptos Labs", "Aptos Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["smart_contracts", "l1"]
+
+[[project]]
+symbol = "NEAR"
+canonical_name = "NEAR Protocol"
+aliases = []
+organizations = ["NEAR Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation"]
+theme_tags = ["smart_contracts", "l1", "ai"]
+
+[[project]]
+symbol = "UNI"
+canonical_name = "Uniswap"
+aliases = ["Uniswap Protocol", "Unichain"]
+organizations = ["Uniswap Labs", "Uniswap Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["defi", "dex"]
+
+[[project]]
+symbol = "AAVE"
+canonical_name = "Aave"
+aliases = ["Aave Protocol"]
+organizations = ["Aave Labs", "Aave DAO"]
+ecosystem_terms = ["GHO"]
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["dao"]
+theme_tags = ["defi", "lending"]
+
+[[project]]
+symbol = "TIA"
+canonical_name = "Celestia"
+aliases = []
+organizations = ["Celestia Foundation", "Celestia Labs"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["modular", "data_availability"]
+
+[[project]]
+symbol = "INJ"
+canonical_name = "Injective"
+aliases = []
+organizations = ["Injective Labs", "Injective Foundation"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "venture"]
+theme_tags = ["defi", "l1"]
+
+[[project]]
+symbol = "ATOM"
+canonical_name = "Cosmos Hub"
+aliases = []
+organizations = ["Interchain Foundation"]
+ecosystem_terms = ["IBC"]
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation"]
+theme_tags = ["interoperability"]
+
+[[project]]
+symbol = "FIL"
+canonical_name = "Filecoin"
+aliases = []
+organizations = ["Filecoin Foundation", "Protocol Labs"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation"]
+theme_tags = ["storage", "infrastructure"]
+
+[[project]]
+symbol = "HBAR"
+canonical_name = "Hedera"
+aliases = ["Hedera Hashgraph"]
+organizations = ["HBAR Foundation", "Hedera Council"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 2
+backer_tags = ["foundation", "corporate"]
+theme_tags = ["l1"]

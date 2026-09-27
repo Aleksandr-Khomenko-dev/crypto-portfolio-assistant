@@ -100,3 +100,66 @@ def top(
         minimum_score=settings.scanner_watch_score,
         limit=limit,
     )
+
+
+@router.get("/oi-collection")
+def oi_collection(runtime: Runtime) -> dict:
+    """Latest collector telemetry and exact-horizon coverage (diagnostic only)."""
+    from app.analytics.open_interest import next_boundary
+
+    return {
+        "running": runtime.oi_lock.locked(),
+        "next_boundary": next_boundary(datetime.now(UTC)),
+        "last_collection": runtime.oi_last_collection,
+    }
+
+
+@router.get("/early/events")
+def early_events(
+    db: Database,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    event_type: str | None = None,
+) -> list[dict]:
+    """Recent early-warning events (research log; never a trading score)."""
+    from sqlalchemy import select
+
+    from app.db.scanner_models import FastMarketEvent
+
+    query = select(FastMarketEvent).order_by(FastMarketEvent.detected_at.desc())
+    if event_type:
+        query = query.where(FastMarketEvent.event_type == event_type.upper())
+    return [
+        {
+            "id": str(row.id),
+            "symbol": row.symbol,
+            "direction": row.direction,
+            "event_type": row.event_type or row.state,
+            "decision": row.decision,
+            "price": row.price,
+            "strength": row.strength,
+            "source_timeframe": row.source_timeframe,
+            "zone": row.zone,
+            "metrics": row.metrics,
+            "technical_score": row.technical_score,
+            "detected_at": row.detected_at,
+            "sent": row.sent,
+            "telegram_message_id": row.telegram_message_id,
+            "latency_ms": row.latency_ms,
+        }
+        for row in db.scalars(query.limit(limit))
+    ]
+
+
+@router.get("/early/calibration")
+def early_calibration(db: Database, settings: Configuration) -> dict:
+    """Measured early-event statistics. Rates are withheld below the minimum sample
+    size; nothing here is a success probability."""
+    from app.early.outcomes import calibration
+    from app.early.service import outcome_rows
+
+    return {
+        "min_samples": settings.calibration_min_samples,
+        "horizon_minutes": settings.early_outcome_horizon_minutes,
+        "note": "Research statistics, not probabilities. Low samples are not evidence.",
+        "event_types": calibration(outcome_rows(db), settings.calibration_min_samples),
+    }

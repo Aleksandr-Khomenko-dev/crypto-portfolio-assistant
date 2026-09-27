@@ -44,6 +44,7 @@ def price_bars(prices):
 
 class FixtureFutures:
     exchange = "BINANCE"
+    publishes_oi_history = True
 
     def __init__(self, fail=(), derivatives_fail=False):
         self.fail = fail

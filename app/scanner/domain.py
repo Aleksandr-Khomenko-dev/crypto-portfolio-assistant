@@ -44,8 +44,8 @@ class StaleDataError(ValueError):
     """Closed-candle history is older than one interval plus grace."""
 
 
-Timeframe = Literal["5m", "15m", "1h", "4h", "1d"]
-INTERVAL_SECONDS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+Timeframe = Literal["1m", "5m", "15m", "1h", "4h", "1d"]
+INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
 class Candle(BaseModel):
@@ -86,9 +86,19 @@ class Ticker(BaseModel):
     price: Decimal = Field(gt=0)
     quote_volume: Decimal = Field(ge=0)
     timestamp: AwareDatetime
+    # Best bid/ask when the exchange publishes them (liquidity filter only).
+    bid: Decimal | None = Field(default=None, ge=0)
+    ask: Decimal | None = Field(default=None, ge=0)
+
+    @property
+    def spread_pct(self) -> float | None:
+        if not self.bid or not self.ask or self.ask < self.bid:
+            return None
+        return float((self.ask - self.bid) / ((self.ask + self.bid) / 2) * 100)
 
 
 class OIPoint(BaseModel):
+    observed_at: AwareDatetime | None = None
     timestamp: AwareDatetime
     contracts: Decimal = Field(ge=0)
 
@@ -108,7 +118,11 @@ class Derivatives(BaseModel):
     open_interest_notional: Decimal | None = Field(default=None, ge=0)
     oi_timestamp: AwareDatetime | None = None
     history: list[OIPoint] = Field(default_factory=list)
+    # "EXCHANGE" (published history) or "SELF_RECORDED" (stored live observations).
+    oi_history_source: str | None = None
     oi_change_pct: float | None = None
+    # Keys 15m/1h/4h, ending at the latest closed boundary; None = not enough history.
+    oi_change_by_horizon: dict[str, float | None] = Field(default_factory=dict)
     price_change_pct: float | None = None
     interpretation: str = "unavailable"
     funding_state: str = "unavailable"

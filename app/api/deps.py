@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from app.config import get_settings
@@ -37,6 +38,7 @@ async def close_cached_provider() -> None:
 
 
 _scanner_runtime: ScannerRuntime | None = None
+_scanner_runtime_guard = Lock()
 
 
 def get_scanner_runtime() -> ScannerRuntime:
@@ -44,10 +46,13 @@ def get_scanner_runtime() -> ScannerRuntime:
     from app.services.scanner_service import ScannerRuntime
 
     global _scanner_runtime
-    if _scanner_runtime is None:
-        settings = get_settings()
-        _scanner_runtime = ScannerRuntime(create_futures_provider(settings), settings)
-    return _scanner_runtime
+    with _scanner_runtime_guard:
+        if _scanner_runtime is None:
+            settings = get_settings()
+            _scanner_runtime = ScannerRuntime(
+                create_futures_provider(settings), settings
+            )
+        return _scanner_runtime
 
 
 async def close_scanner_runtime() -> None:

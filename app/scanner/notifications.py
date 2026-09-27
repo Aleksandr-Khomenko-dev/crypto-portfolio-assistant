@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from html import escape
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,7 +12,7 @@ from app.db.scanner_models import MarketSetup, ScannerSnapshot
 from app.scanner.domain import ScannerResult, Setup, SignalState
 from app.scanner.repository import utc
 from app.services.telegram_service import TelegramService
-from app.telegram.scanner import format_setup
+from app.telegram.scanner import Mode, format_setup
 
 logger = logging.getLogger(__name__)
 STATE_RANK = {state.value: rank for rank, state in enumerate(SignalState)}
@@ -45,15 +44,57 @@ def should_notify(setup: MarketSetup, now: datetime, settings: Settings) -> bool
     )
 
 
-DRY_RUN_LABEL = "🧪 DRY RUN — research data collection.\nNot a live trading signal."
+def _news_context(session: Session, setup: MarketSetup, as_of: datetime) -> list:
+    """Up to 3 relevant news events RECEIVED by `as_of` (the scan time), recorded as
+    setup links for research. News is context only; failures never block the alert."""
+    try:
+        from app.news.domain import EntityMatch, MatchType
+        from app.news.repository import ActiveSetupRef, link_setup, setup_news_context
+
+        contexts = setup_news_context(session, setup.symbol, as_of)
+        session.commit()
+        ref = ActiveSetupRef(
+            setup_id=setup.id,
+            exchange=setup.exchange,
+            symbol=setup.symbol,
+            direction=setup.direction,
+            score=setup.score,
+            state=setup.state,
+            readiness=setup.readiness,
+            created_at=utc(setup.created_at),
+            telegram_message_id=None,
+        )
+        for context in contexts:
+            match = EntityMatch(
+                symbol=context.matched_symbol,
+                match_type=MatchType(context.match_type),
+                confidence=1.0,
+                matched_text=context.matched_symbol,
+            )
+            link_setup(
+                session, context.cluster_id, ref, match, "setup_alert_context", as_of
+            )
+        return contexts
+    except Exception as exc:  # noqa: BLE001 - news must never block a scanner alert
+        session.rollback()
+        logger.warning("News context unavailable error=%s", type(exc).__name__)
+        return []
 
 
 async def deliver_notifications(
-    session: Session, settings: Settings, now: datetime, label: str | None = None
+    session: Session,
+    settings: Settings,
+    now: datetime,
+    mode: Mode | None = None,
+    limit: int | None = None,
 ) -> int:
     """Send due scanner alerts; returns how many Telegram accepted.
 
-    `label` prefixes every message (integration tests, dry runs)."""
+    `mode` labels every message (TEST for integration checks; DRY_RUN is implied by
+    CPDA_SCANNER_DRY_RUN). Which alerts are due is decided by should_notify only.
+    `limit` is the remaining per-run budget when a scan delivers in several passes;
+    callers must serialise calls (ScannerRuntime.notify_lock) so no alert is sent twice.
+    """
     telegram = TelegramService(settings)
     if not telegram.enabled or not settings.scanner_telegram_chat_id:
         logger.info(
@@ -61,8 +102,8 @@ async def deliver_notifications(
             "CPDA_SCANNER_TELEGRAM_CHAT_ID is not set"
         )
         return 0
-    if label is None and settings.scanner_dry_run:
-        label = DRY_RUN_LABEL
+    if mode is None:
+        mode = "DRY_RUN" if settings.scanner_dry_run else "LIVE"
     rows = list(
         session.scalars(
             select(MarketSetup)
@@ -85,28 +126,38 @@ async def deliver_notifications(
         if snapshot is None:
             continue
         result = ScannerResult.model_validate(snapshot.data)
-        message = format_setup(
-            Setup.model_validate(setup.data), result, setup.lifecycle
+        news = (
+            _news_context(session, setup, now)
+            if setup.lifecycle == "ACTIVE" and settings.news_enabled
+            else []
         )
-        if setup.initial_invalidation is not None:
-            message += f"\nEpisode invalidation (fixed): {escape(str(setup.initial_invalidation))}"
-        if label:
-            message = f"<b>{escape(label)}</b>\n\n{message}"
+        message = format_setup(
+            Setup.model_validate(setup.data),
+            result,
+            setup.lifecycle,
+            mode=mode,
+            language=settings.telegram_language,
+            episode_invalidation=setup.initial_invalidation,
+            news=news,
+        )
         pending.append((setup.id, message))
-        if len(pending) >= settings.scanner_alerts_per_run:
+        if len(pending) >= min(settings.scanner_alerts_per_run, limit or 10**9):
             break
     session.commit()  # Release reads before waiting for Telegram or its pacing delay.
     accepted = 0
     for index, (setup_id, message) in enumerate(pending):
         if index:
             await asyncio.sleep(settings.scanner_telegram_interval_seconds)
-        sent, error, retry = False, None, None
+        sent, error, retry, message_id = False, None, None, None
         try:
             # Bounded wait: a hung request must not hold the scan lock indefinitely.
-            sent = await asyncio.wait_for(
+            response = await asyncio.wait_for(
                 telegram.send_scanner(settings.scanner_telegram_chat_id, message),
                 timeout=settings.http_timeout_seconds,
             )
+            sent = bool(response)
+            if isinstance(response, list) and response:
+                message_id = response[0]
         except Exception as exc:  # noqa: BLE001 - never log token-bearing exception URLs
             error = type(exc).__name__
             retry = getattr(exc, "retry_after", None)
@@ -137,6 +188,8 @@ async def deliver_notifications(
                     "ready_notified", old.get("readiness") == "READY"
                 )
                 or setup.readiness == "READY",
+                # The first alert's message: news follow-ups reply under it.
+                "telegram_message_id": old.get("telegram_message_id") or message_id,
             }
         else:
             # Back off repeated failures so a permanently rejected message cannot

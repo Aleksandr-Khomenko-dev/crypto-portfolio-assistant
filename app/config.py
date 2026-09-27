@@ -52,6 +52,8 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_polling_enabled: bool = True
+    # Scanner message language (catalog in app/telegram/i18n.py); English can be added.
+    telegram_language: Literal["ru"] = "ru"
 
     scheduler_enabled: bool = True
     monitoring_interval_minutes: int = 5
@@ -134,10 +136,83 @@ class Settings(BaseSettings):
     # Primary scanner exchange. One run uses exactly one exchange for every metric.
     scanner_provider: Literal["bingx", "binance"] = "bingx"
     bingx_base_url: str = "https://open-api.bingx.com"
+    bingx_mark_price_ws_url: str = "wss://open-api-swap.bingx.com/swap-market"
     # Observed BingX headers: x-ratelimit-requests-remain/expire (500 per 10 s window).
     # Budget half of it; the scanner shares the IP with anything else you run.
     bingx_requests_per_window: int = Field(default=250, ge=10, le=500)
     bingx_rate_window_seconds: float = Field(default=10.0, gt=0, le=60)
+    # Self-recorded OI (exchanges without public OI history, e.g. BingX): a live
+    # observation is stored for a 15m boundary only if taken within this many seconds
+    # of it. Collection runs independently on 15m clock boundaries.
+    oi_snapshot_tolerance_seconds: float = Field(default=150, ge=0, le=450)
+    # Future clock-skew allowance for OI timestamps (exchange clock slightly ahead
+    # of this host). Clock-skew validation only; keep the host clock NTP-synced.
+    oi_clock_skew_tolerance_seconds: float = Field(default=2.0, ge=0, le=5)
+    oi_snapshot_retention_days: int = Field(default=14, ge=1)
+    # News context (CONTEXT ONLY: never changes the trading score or alert rules).
+    news_enabled: bool = True
+    news_send_telegram: bool = True
+    news_queue_size: int = Field(default=1000, ge=10, le=100_000)
+    news_workers: int = Field(default=2, ge=1, le=16)
+    # Polling cadence for sources without push delivery (fair use; never 15 min).
+    news_poll_bingx_seconds: float = Field(default=30, ge=5, le=600)
+    news_poll_rss_seconds: float = Field(default=60, ge=30, le=3600)
+    # SEC fair access requires a descriptive User-Agent with a contact you choose;
+    # the SEC feed stays disabled until this is set. Never defaulted to any address.
+    news_sec_user_agent: str | None = None
+    # Items older than this at receipt are stored but never alerted (no backlog spam).
+    news_alert_max_age_minutes: int = Field(default=60, ge=1)
+    news_critical_max_age_minutes: int = Field(default=240, ge=1)
+    news_urgent_cooldown_minutes: int = Field(default=15, ge=0)
+    news_min_link_confidence: float = Field(default=0.8, ge=0, le=1)
+    news_latency_slo_ms: int = Field(default=3000, ge=100)
+    # Fast market watcher: EARLY WARNING only (never a trading score / alert rule).
+    fast_enabled: bool = True
+    fast_send_telegram: bool = True
+    fast_symbols_per_connection: int = Field(default=100, ge=10, le=200)
+    fast_min_quote_volume_usd: float = Field(default=10_000_000, ge=0)
+    fast_sigma_k: float = Field(default=4.0, gt=0)
+    fast_sigma_k_extreme: float = Field(default=8.0, gt=0)
+    fast_min_pct_1m: float = Field(default=1.0, gt=0)
+    fast_min_pct_3m: float = Field(default=1.8, gt=0)
+    fast_min_pct_5m: float = Field(default=2.5, gt=0)
+    fast_volume_expansion: float = Field(default=3.0, gt=1)
+    fast_cooldown_minutes: int = Field(default=30, ge=1)
+    fast_queue_size: int = Field(default=200, ge=10)
+    # Liquidity: markets wider than this bid/ask spread (REST ticker) are excluded,
+    # and every exclusion is recorded with its reason (never silently dropped).
+    fast_max_spread_pct: float = Field(default=0.15, gt=0)
+    # Early structural layer (EARLY WARNING; never a score, threshold or scanner
+    # alert rule). Distances are in ATR of the zone's reference timeframe (1H ATR
+    # for 1H/4H zones, 15m ATR for 15m zones/patterns, 5m ATR for 5m patterns).
+    early_enabled: bool = True  # early trend ignition + breakout/retest episodes
+    early_patterns_enabled: bool = True  # FORMATION_WATCH candidates
+    early_zone_watch_enabled: bool = True
+    early_send_telegram: bool = True
+    early_zone_min_touches: int = Field(default=2, ge=1)
+    early_approach_atr: float = Field(default=0.35, gt=0, le=2)
+    early_break_atr: float = Field(default=0.10, gt=0, le=2)
+    early_break_hold_seconds: float = Field(default=10, ge=1, le=300)
+    early_retest_atr: float = Field(default=0.25, gt=0, le=2)
+    early_fail_atr: float = Field(default=0.25, gt=0, le=2)
+    early_late_origin_atr: float = Field(default=3.0, gt=0)
+    early_ignition_min_strength: int = Field(default=55, ge=0, le=100)
+    early_formation_min_strength: int = Field(default=50, ge=0, le=100)
+    early_cooldown_minutes: float = Field(default=120, ge=1)
+    # Notification policy (Telegram only; every valid event is still persisted and
+    # enters outcome research). Zone/formation/late events are research by default.
+    early_notify_zone_watch: bool = False
+    early_notify_formation: bool = False
+    early_notify_approach_atr: float = Field(default=0.20, gt=0, le=1)
+    early_notify_budget_per_5min: int = Field(default=3, ge=0)
+    early_notify_budget_per_hour: int = Field(default=12, ge=0)
+    early_context_concurrency: int = Field(default=3, ge=1, le=10)
+    early_priority_analyses_per_minute: int = Field(default=6, ge=0, le=60)
+    early_outcome_horizon_minutes: int = Field(default=240, ge=30, le=1440)
+    # How often setup expiry is checked between scans (lifecycle alerts).
+    lifecycle_check_seconds: float = Field(default=15, ge=1, le=300)
+    oi_collection_enabled: bool = True
+    oi_collection_concurrency: int = Field(default=5, ge=1, le=20)
     scanner_watch_score: int = Field(default=60, ge=0, le=100)
     scanner_setup_score: int = Field(default=70, ge=0, le=100)
     scanner_high_score: int = Field(default=80, ge=0, le=100)

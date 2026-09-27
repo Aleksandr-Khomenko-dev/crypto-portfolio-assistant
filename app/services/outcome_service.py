@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.db.scanner_models import MarketSetup, SetupOutcome
 from app.providers.futures import FuturesProvider
+from app.providers.futures_factory import ProviderRegistry
 from app.research.outcomes import (
     LOWER_TIMEFRAME,
     TRACKING,
@@ -28,54 +29,84 @@ logger = logging.getLogger(__name__)
 
 
 class OutcomeService:
+    """Tracks each outcome with the exchange stored on its setup, never the scanner's
+    currently selected provider (a BingX setup is always measured with BingX candles)."""
+
     def __init__(
-        self, session: Session, provider: FuturesProvider, settings: Settings
+        self,
+        session: Session,
+        providers: ProviderRegistry | FuturesProvider,
+        settings: Settings,
     ) -> None:
-        self.session, self.provider, self.settings = session, provider, settings
+        self.session, self.settings = session, settings
+        # A bare provider tracks only its own exchange; others are left untouched.
+        self.providers = (
+            providers
+            if isinstance(providers, ProviderRegistry)
+            else ProviderRegistry(settings, {providers.exchange: providers}, None)
+        )
 
     async def process(
         self,
         now: datetime,
-        known_bars: dict[tuple[str, str], list[Candle]] | None = None,
+        known_bars: dict[tuple[str, str, str], list[Candle]] | None = None,
     ) -> Counter[str]:
-        """`known_bars` reuses closed candles the scanner already fetched this cycle."""
+        """`known_bars` reuses closed candles fetched this cycle, keyed by
+        (exchange, symbol, timeframe) so bars can never cross exchanges."""
         stats: Counter[str] = Counter()
         rows = self.session.execute(
-            select(SetupOutcome.id, MarketSetup.symbol, SetupOutcome.timeframe)
-            .join(MarketSetup, SetupOutcome.market_setup_id == MarketSetup.id)
-            .where(
-                SetupOutcome.outcome_status == TRACKING,
-                # Only this provider's exchange: a setup's outcome is always measured
-                # with candles from the exchange that produced it.
-                MarketSetup.exchange == self.provider.exchange,
+            select(
+                SetupOutcome.id,
+                MarketSetup.exchange,
+                MarketSetup.symbol,
+                SetupOutcome.timeframe,
             )
+            .join(MarketSetup, SetupOutcome.market_setup_id == MarketSetup.id)
+            .where(SetupOutcome.outcome_status == TRACKING)
         ).all()
         self.session.commit()  # No read transaction spans the HTTP requests below.
+        providers: dict[str, FuturesProvider] = {}
+        for exchange in sorted({row.exchange for row in rows}):
+            try:
+                providers[exchange] = self.providers.get(exchange)
+            except LookupError:
+                skipped = sum(row.exchange == exchange for row in rows)
+                stats["outcomes_provider_unavailable"] += skipped
+                logger.warning(
+                    "Outcome provider unavailable exchange=%s outcomes=%s",
+                    exchange,
+                    skipped,
+                )
         bars = dict(known_bars or {})
-        missing = sorted({(s, tf) for _, s, tf in rows} - set(bars))
+        missing = sorted(
+            {(e, s, tf) for _, e, s, tf in rows if e in providers} - set(bars)
+        )
         semaphore = asyncio.Semaphore(self.settings.scanner_concurrency)
 
-        async def fetch(symbol: str, timeframe: str) -> None:
+        async def fetch(exchange: str, symbol: str, timeframe: str) -> None:
             async with semaphore:
                 try:
-                    bars[(symbol, timeframe)] = await self.provider.candles(
-                        symbol, cast(Timeframe, timeframe), now
-                    )
+                    bars[(exchange, symbol, timeframe)] = await providers[
+                        exchange
+                    ].candles(symbol, cast(Timeframe, timeframe), now)
                 except Exception as exc:  # noqa: BLE001 - isolate per-symbol provider failures
                     stats["outcome_fetch_failures"] += 1
                     logger.warning(
-                        "Outcome candles unavailable symbol=%s error=%s",
+                        "Outcome candles unavailable exchange=%s symbol=%s error=%s",
+                        exchange,
                         symbol,
                         type(exc).__name__,
                     )
 
-        await asyncio.gather(*(fetch(symbol, tf) for symbol, tf in missing))
-        for outcome_id, symbol, timeframe in rows:
-            history = bars.get((symbol, timeframe))
-            if history is None:
+        await asyncio.gather(*(fetch(*key) for key in missing))
+        for outcome_id, exchange, symbol, timeframe in rows:
+            history = bars.get((exchange, symbol, timeframe))
+            if history is None or exchange not in providers:
                 continue
             try:
-                await self._advance_one(outcome_id, symbol, history, now, stats)
+                await self._advance_one(
+                    outcome_id, providers[exchange], symbol, history, now, stats
+                )
             except Exception as exc:  # noqa: BLE001 - one outcome must not stop the others
                 self.session.rollback()
                 stats["outcome_errors"] += 1
@@ -89,6 +120,7 @@ class OutcomeService:
     async def _advance_one(
         self,
         outcome_id: object,
+        provider: FuturesProvider,
         symbol: str,
         history: list[Candle],
         now: datetime,
@@ -106,7 +138,7 @@ class OutcomeService:
         parent = step.unresolved_parent
         if parent is not None and self.settings.outcome_ltf_resolution:
             try:
-                children = await self.provider.range_candles(
+                children = await provider.range_candles(
                     symbol,
                     cast(Timeframe, LOWER_TIMEFRAME[row.timeframe]),
                     parent.open_time,

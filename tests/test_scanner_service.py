@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from app.api.deps import get_scanner_runtime
 from app.config import Settings, get_settings
 from app.db.scanner_models import MarketSetup, ScannerRun, ScannerSnapshot
-from app.scanner.domain import Derivatives, MarketContext, Ticker
+from app.scanner.domain import Derivatives, Direction, MarketContext, Ticker
 from app.scanner.notifications import deliver_notifications, should_notify
 from app.scanner.repository import ScannerRepository
 from app.scanner.scoring import build_result
@@ -157,9 +157,10 @@ async def test_notification_success_failure_and_html_safety(session, monkeypatch
         result.setups[0].model_copy(update={"symbol": "<unsafe>"}), result
     )
     assert "&lt;unsafe&gt;" in text and "<unsafe>" not in text
-    assert "model confluence" in text and "No automatic trading" in text
-    assert "AAAUSDT" in format_ranking(repo.setups(now=now), "Top LONG")
-    assert "No current" in format_ranking([], "Top SHORT")
+    assert "а не вероятность успешной сделки" in text
+    assert "Автоматической торговли нет" in text
+    assert "AAAUSDT" in format_ranking(repo.setups(now=now), Direction.LONG)
+    assert "Сейчас нет подходящих сетапов" in format_ranking([], Direction.SHORT)
 
 
 def test_scanner_api_run_filters_status_and_detail(client):

@@ -53,9 +53,6 @@ from app.scanner.scoring import signal_state
 from app.telegram.smoke_test import missing_settings, safe_error
 
 SYMBOL = "ARBUSDT"
-TEST_LABEL = (
-    "🧪 TEST SCANNER ALERT\nThis is an integration test.\nNot a live trading signal."
-)
 ENTRY, INVALIDATION, RESISTANCE = (
     Decimal("0.5000"),
     Decimal("0.4800"),
@@ -215,7 +212,7 @@ async def run_sequence(
         session.commit()
         setup = session.query(MarketSetup).one()
         due = should_notify(setup, at, settings)
-        sent = await deliver_notifications(session, settings, at, label=TEST_LABEL) > 0
+        sent = await deliver_notifications(session, settings, at, mode="TEST") > 0
         session.refresh(setup)
         outcome = (
             "SENT"

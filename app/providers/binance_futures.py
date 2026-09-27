@@ -46,6 +46,7 @@ class BinanceFuturesProvider:
     """Reusable public GET client, paced globally with incremental closed-bar caching."""
 
     exchange = "BINANCE"
+    publishes_oi_history = True
 
     def __init__(
         self, settings: Settings, http_client: httpx.AsyncClient | None = None
@@ -293,7 +294,8 @@ class BinanceFuturesProvider:
                 {
                     "symbol": symbol,
                     "period": "15m",
-                    "limit": 6,
+                    # 17 x 15m reaches back 4h, enough for the 4h OI delta.
+                    "limit": 17,
                     "endTime": int(now.timestamp() // 900 * 900 * 1000),
                 },
             ),
@@ -319,6 +321,7 @@ class BinanceFuturesProvider:
                     result.open_interest = Decimal(data["openInterest"])
                     result.oi_timestamp = timestamp(data["time"])
                 else:
+                    result.oi_history_source = "EXCHANGE"
                     result.history = sorted(
                         [
                             OIPoint(

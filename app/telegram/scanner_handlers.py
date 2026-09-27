@@ -43,7 +43,7 @@ async def scanner_handler(message: Message, command: CommandObject) -> None:
                 symbol += "USDT"
             results = repo.latest_results(symbol, limit=1) if symbol else []
             if not results:
-                text = "No analysis found. Usage: /setup BTCUSDT"
+                text = "Анализ не найден. Пример: /setup BTCUSDT"
             else:
                 result = results[0]
                 for setup in result.setups:
@@ -52,6 +52,7 @@ async def scanner_handler(message: Message, command: CommandObject) -> None:
                             setup,
                             result,
                             result.setup_lifecycles.get(setup.direction, "SNAPSHOT"),
+                            language=settings.telegram_language,
                         ),
                         parse_mode="HTML",
                     )
@@ -70,7 +71,7 @@ async def scanner_handler(message: Message, command: CommandObject) -> None:
                 minimum_score=settings.scanner_watch_score,
                 limit=10,
             )
-            text = format_ranking(setups, f"Top {direction or 'watchlist'} setups")
+            text = format_ranking(setups, direction, settings.telegram_language)
     await message.answer(text, parse_mode="HTML")
 
 

@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from app.config import Settings
 from app.db.scanner_models import MarketSetup, ScannerSnapshot
-from app.scanner.notifications import DRY_RUN_LABEL, deliver_notifications
+from app.scanner.notifications import deliver_notifications
 from app.services.scanner_service import ScannerRuntime, ScannerService
 from app.telegram import scanner_smoke_test, smoke_test
 from tests.scanner_fixtures import FixtureFutures
@@ -117,9 +117,10 @@ async def test_ready_alert_sent_once_then_duplicate_suppressed(session, telegram
     assert row.readiness == "READY" and row.score >= settings.scanner_alert_score
     assert await deliver_notifications(session, settings, now) == 1
     text = telegram_api.call_args.kwargs["text"]
-    assert "AAAUSDT" in text and "READY" in text and "No automatic trading" in text
-    assert "DRY RUN" not in text
-    assert "Exchange: Binance" in text  # legacy fixture result from Binance
+    assert "AAAUSDT" in text and "УСЛОВИЯ ПОДТВЕРЖДЕНЫ" in text
+    assert "Автоматической торговли нет" in text and "📡 Режим: LIVE" in text
+    assert "DRY RUN" not in text and "ТЕСТОВЫЙ" not in text
+    assert "· Binance" in text  # legacy fixture result from Binance
     assert await deliver_notifications(session, settings, now) == 0
     assert telegram_api.call_count == 1
     assert row.notified_data["ready_notified"] is True
@@ -128,9 +129,9 @@ async def test_ready_alert_sent_once_then_duplicate_suppressed(session, telegram
 async def test_dry_run_alerts_are_labelled(session, telegram_api):
     settings, _, _, _ = save_ready(session, scanner_dry_run=True, **LIVE)
     await deliver_notifications(session, settings, datetime.now(UTC))
-    assert telegram_api.call_args.kwargs["text"].startswith(
-        "<b>" + DRY_RUN_LABEL.split("\n")[0]
-    )
+    text = telegram_api.call_args.kwargs["text"]
+    assert text.startswith("🧪 <b>DRY RUN</b>")
+    assert "Это НЕ реальный торговый сигнал." in text
 
 
 async def test_scanner_path_sequence_matches_production_rules(
@@ -141,11 +142,11 @@ async def test_scanner_path_sequence_matches_production_rules(
     assert delivered == [True, False, False, True]
     texts = [c.kwargs["text"] for c in telegram_api.call_args_list]
     assert len(texts) == 2
-    assert all(t.startswith("<b>🧪 TEST SCANNER ALERT") for t in texts)
-    assert "ARBUSDT" in texts[0] and "Score: 85 / 100" in texts[0]
-    assert "NEXT: READY" in texts[0] and "HIGH_CONFLUENCE LONG" in texts[0]
-    assert "INVALIDATED" in texts[1]
-    assert all("Exchange: BingX" in t for t in texts)  # default provider
+    assert all(t.startswith("🧪 <b>ТЕСТОВЫЙ СИГНАЛ</b>") for t in texts)
+    assert "ARBUSDT" in texts[0] and "Оценка: <b>85 / 100</b>" in texts[0]
+    assert "УСЛОВИЯ ПОДТВЕРЖДЕНЫ" in texts[0] and "СИЛЬНЫЙ СИГНАЛ" in texts[0]
+    assert "СЦЕНАРИЙ ОТМЕНЁН" in texts[1] and "0.4800" in texts[1]
+    assert all("· BingX" in t for t in texts)  # default provider
     out = capsys.readouterr().out
     assert out.count("SUPPRESSED") == 2 and out.count("-> SENT") == 2
     assert_no_token(out)
@@ -238,3 +239,15 @@ class _NullSession:
 
     def __exit__(self, *exc):
         return False
+
+
+@pytest.mark.parametrize("mode", ["LIVE", "TEST", "DRY_RUN"])
+async def test_message_mode_never_changes_which_alerts_are_sent(
+    session, telegram_api, mode
+):
+    """Presentation modes only change text; should_notify decides delivery."""
+    settings, _, _, row = save_ready(session, **LIVE)
+    now = datetime.now(UTC)
+    assert await deliver_notifications(session, settings, now, mode=mode) == 1
+    assert await deliver_notifications(session, settings, now, mode=mode) == 0
+    assert telegram_api.call_count == 1 and row.notified_data["ready_notified"]

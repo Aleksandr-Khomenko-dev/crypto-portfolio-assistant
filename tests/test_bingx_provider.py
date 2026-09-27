@@ -1,6 +1,7 @@
 """BingX adapter tests. Every HTTP call is mocked with payload shapes captured from the
 live public API on 2026-09-23 (objects newest-first, error envelopes on HTTP 200)."""
 
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -489,15 +490,6 @@ def bingx_routes(now, symbols, failing=()):
     respx.get(BASE + "/openApi/swap/v2/quote/premiumIndex").mock(
         return_value=ok([premium(s, mark="112") for s in symbols])
     )
-    respx.get(BASE + "/openApi/swap/v2/quote/openInterest").mock(
-        side_effect=lambda request: ok(
-            {
-                "openInterest": "1000000",
-                "symbol": request.url.params["symbol"],
-                "time": int(now.timestamp() * 1000),
-            }
-        )
-    )
     return requested
 
 
@@ -528,7 +520,7 @@ async def test_full_scan_on_bingx_context_isolation_and_no_mixing(session, no_sl
     assert all(s.data["exchange"] == "BINGX" for s in snapshots)
     assert all(s.data["context"]["assets"] for s in snapshots)
     assert all(
-        s.data["derivatives"]["open_interest_notional"] == "1000000" for s in snapshots
+        s.data["derivatives"]["open_interest_notional"] is None for s in snapshots
     )
     session.refresh(legacy)
     assert legacy.exchange == "BINANCE" and legacy.snapshot_id != snapshots[0].id
@@ -572,9 +564,30 @@ async def test_outcome_tracking_stays_on_the_setup_exchange(session):
         bars[0].close_time
     )
     session.refresh(outcome)
-    assert binance.calls == 0 and outcome.bars_processed == 0 and not stats
+    assert binance.calls == 0 and outcome.bars_processed == 0
+    assert stats == {"outcomes_provider_unavailable": 1}
     bingx = _Recorder("BINGX", bars)
     await OutcomeService(session, bingx, settings_).process(bars[0].close_time)
     session.refresh(outcome)
     assert bingx.calls == 1 and outcome.bars_processed == 1
     assert session.scalar(select(func.count()).select_from(SetupOutcome)) == 1
+
+
+@respx.mock
+async def test_cache_expiry_follows_wall_clock_across_os_sleep(monkeypatch):
+    """Regression (live 2026-09-24): after macOS sleep, monotonic time had not
+    advanced, so a pre-sleep server time stayed 'fresh' and every market was stale."""
+    route = respx.get(BASE + "/openApi/swap/v2/server/time").mock(
+        return_value=ok({"serverTime": int(NOW.timestamp() * 1000)})
+    )
+    provider = BingXFuturesProvider(settings())
+    try:
+        await provider._server_now(NOW)
+        await provider._server_now(NOW)
+        assert route.call_count == 1  # cached within the TTL
+        slept = time.time() + 3600  # an hour of wall time passes while asleep
+        monkeypatch.setattr("app.providers.bingx_futures.time.time", lambda: slept)
+        await provider._server_now(NOW + timedelta(hours=1))
+        assert route.call_count == 2  # expired by wall clock, refetched
+    finally:
+        await provider.aclose()

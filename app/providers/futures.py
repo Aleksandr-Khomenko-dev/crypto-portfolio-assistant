@@ -13,6 +13,8 @@ class FuturesProvider(Protocol):
     """
 
     exchange: str  # e.g. "BINGX"; stored on results, setups and outcomes
+    # False: the exchange has no public OI history, so the scanner records its own.
+    publishes_oi_history: bool
 
     async def contracts(self) -> list[Contract]: ...
     async def tickers(self) -> dict[str, Ticker]: ...

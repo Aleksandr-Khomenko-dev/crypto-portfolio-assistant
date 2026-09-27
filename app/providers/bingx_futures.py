@@ -23,13 +23,16 @@ import logging
 import re
 import time
 from collections import Counter
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 import httpx
 from pydantic import ValidationError
 
+from app.analytics.open_interest import OIObservation, aligned_bucket
 from app.config import Settings
 from app.providers.request_control import RequestBudget
 from app.scanner.domain import (
@@ -111,6 +114,7 @@ class BingXFuturesProvider:
     """Public BingX swap client with one shared limiter and incremental closed-bar cache."""
 
     exchange = "BINGX"
+    publishes_oi_history = False  # history comes from stored live observations
 
     def __init__(
         self, settings: Settings, http_client: httpx.AsyncClient | None = None
@@ -133,6 +137,12 @@ class BingXFuturesProvider:
         self._cache: dict[str, tuple[float, Any, datetime]] = {}
         self._bars: dict[tuple[str, str], list[Candle]] = {}
         self.stats: Counter[str] = Counter()
+        self._normal_requests = asyncio.Event()
+        self._normal_requests.set()
+        self._oi_priority: ContextVar[bool] = ContextVar(
+            "bingx_oi_priority", default=False
+        )
+        self._oi_priority_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -152,7 +162,16 @@ class BingXFuturesProvider:
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         retries = self.settings.scanner_http_retries
         for attempt in range(retries + 1):
-            async with self._semaphore:
+            # OI gets a short priority window, but consumes exactly the same rate budget.
+            # Recheck after acquiring the semaphore: scan requests may already be queued.
+            while True:
+                if not self._oi_priority.get():
+                    await self._normal_requests.wait()
+                await self._semaphore.acquire()
+                if self._oi_priority.get() or self._normal_requests.is_set():
+                    break
+                self._semaphore.release()
+            try:
                 await self._budget.acquire(1)
                 try:
                     self.stats["requests"] += 1
@@ -179,6 +198,8 @@ class BingXFuturesProvider:
                 except (httpx.TransportError, _RateLimited):
                     if attempt == retries:
                         raise
+            finally:
+                self._semaphore.release()
             logger.warning(
                 "BingX transient request failure: %s attempt=%s", path, attempt + 1
             )
@@ -203,18 +224,35 @@ class BingXFuturesProvider:
         raise BingXAPIError(f"BingX error {code}: {str(payload.get('msg'))[:120]}")
 
     async def _cached(
-        self, path: str, ttl: float, params: dict[str, Any] | None = None
+        self,
+        path: str,
+        ttl: float,
+        params: dict[str, Any] | None = None,
+        *,
+        not_before: datetime | None = None,
     ) -> tuple[Any, datetime]:
         """Returns data and the wall-clock time it was fetched (for freshness)."""
         key = path + repr(sorted((params or {}).items()))
+        if not self._oi_priority.get():
+            await self._normal_requests.wait()
         async with self._cache_locks.setdefault(key, asyncio.Lock()):
             cached = self._cache.get(key)
-            if cached and cached[0] > time.monotonic():
+            if (
+                cached
+                # Wall clock: monotonic time stops during OS sleep, which kept a
+                # pre-sleep server time 'fresh' after wake (all markets stale).
+                and cached[0] > time.time()
+                and (not_before is None or cached[2] >= not_before)
+            ):
                 self.stats["cache_hits"] += 1
                 return cached[1], cached[2]
             self.stats["cache_misses"] += 1
-            data = await self._get(path, params)
-            now = time.monotonic()
+            token = self._oi_priority.set(True)
+            try:
+                data = await self._get(path, params)
+            finally:
+                self._oi_priority.reset(token)
+            now = time.time()
             for stale in [k for k, entry in self._cache.items() if entry[0] <= now]:
                 if not self._cache_locks[stale].locked():
                     del self._cache[stale], self._cache_locks[stale]
@@ -247,6 +285,8 @@ class BingXFuturesProvider:
                     price=row["lastPrice"],
                     quote_volume=row["quoteVolume"],  # 24h USDT turnover
                     timestamp=timestamp(row["closeTime"]),
+                    bid=row.get("bidPrice") or None,
+                    ask=row.get("askPrice") or None,
                 )
                 result[ticker.symbol] = ticker
             except (KeyError, TypeError, ValueError, ValidationError):
@@ -312,7 +352,12 @@ class BingXFuturesProvider:
         return result
 
     async def range_candles(
-        self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: datetime,
+        end: datetime,
+        limit: int = 20,
     ) -> list[Candle]:
         payload = await self._get(
             "/openApi/swap/v3/quote/klines",
@@ -321,7 +366,7 @@ class BingXFuturesProvider:
                 "interval": timeframe,
                 "startTime": int(start.timestamp() * 1000),
                 "endTime": int(end.timestamp() * 1000),
-                "limit": 20,
+                "limit": limit,
             },
         )
         bars = [parse_candle(row, timeframe) for row in payload or []]
@@ -329,6 +374,23 @@ class BingXFuturesProvider:
             (b for b in bars if b.open_time >= start and b.close_time <= end),
             key=lambda b: b.open_time,
         )
+
+    async def open_interest_notional(self, symbol: str) -> Decimal:
+        """Current USDT-notional OI for one symbol (1 s cache; shared limiter)."""
+        data, _ = await self._cached(
+            "/openApi/swap/v2/quote/openInterest",
+            1,
+            {"symbol": internal_to_bingx_symbol(symbol)},
+        )
+        return Decimal(data["openInterest"])
+
+    async def announcements(self, content_type: str) -> list[dict[str, Any]]:
+        """Official BingX notices (public, verified live). Shares this provider's limiter."""
+        data = await self._get(
+            "/openApi/content/v1/announcement", {"contentType": content_type}
+        )
+        rows = data.get("list") if isinstance(data, dict) else data
+        return [row for row in rows or [] if isinstance(row, dict)]
 
     async def _funding(self, symbol: str) -> tuple[dict[str, Any], datetime]:
         # One bulk request covers every contract's current funding.
@@ -342,51 +404,84 @@ class BingXFuturesProvider:
                 return row, fetched_at
         raise KeyError(symbol)
 
-    async def derivatives(self, symbol: str, now: datetime) -> Derivatives:
+    @asynccontextmanager
+    async def oi_collection_priority(self):
+        async with self._oi_priority_lock:
+            token = self._oi_priority.set(True)
+            self._normal_requests.clear()
+            try:
+                yield
+            finally:
+                self._normal_requests.set()
+                self._oi_priority.reset(token)
+
+    async def oi_mark_prices(self, boundary: datetime) -> dict[str, Decimal]:
+        from app.providers.bingx_mark_prices import collect_mark_prices
+        from app.scanner.universe import filter_universe
+
+        # Universe endpoints are already warm from the collector (single-flight cache).
+        universe = filter_universe(
+            await self.contracts(), await self.tickers(), self.settings
+        )
+        prices = await collect_mark_prices(
+            self.settings.bingx_mark_price_ws_url,
+            [internal_to_bingx_symbol(symbol) for symbol in universe],
+            boundary,
+            self._budget,
+            self.settings.http_timeout_seconds,
+        )
+        return {
+            bingx_to_internal_symbol(symbol): price for symbol, price in prices.items()
+        }
+
+    async def oi_snapshot(
+        self, symbol: str, boundary: datetime, mark: Decimal
+    ) -> OIObservation:
+        if not mark.is_finite() or mark <= 0:
+            raise ValueError("Invalid OI conversion mark price")
+        row, _ = await self._cached(
+            "/openApi/swap/v2/quote/openInterest",
+            self.settings.scanner_derivatives_cache_seconds,
+            {"symbol": internal_to_bingx_symbol(symbol)},
+            not_before=boundary,
+        )
+        notional = Decimal(row["openInterest"])
+        observed = timestamp(row["time"])
+        bucket = aligned_bucket(observed, self.settings.oi_snapshot_tolerance_seconds)
+        # Return the real timestamp even when unaligned, so the collector can diagnose it.
+        if not notional.is_finite() or notional <= 0:
+            raise ValueError("Invalid OI value")
+        return OIObservation(bucket or observed, observed, notional / mark, notional)
+
+    async def funding(self, symbol: str, now: datetime) -> Derivatives:
+        """Scanner path: funding only. Stored OI is attached by ScannerService."""
         result = Derivatives()
-        funding, interest = await asyncio.gather(
-            self._funding(symbol),
-            self._cached(
+        try:
+            row, fetched_at = await self._funding(symbol)
+            result.funding_rate = Decimal(row["lastFundingRate"])
+            result.funding_timestamp = fetched_at
+            result.next_funding_at = timestamp(row["nextFundingTime"])
+            hours = row.get("fundingIntervalHours")
+            result.funding_interval_hours = int(hours) if hours else None
+        except Exception as exc:  # noqa: BLE001 - optional metric failure
+            result.errors.append("funding: " + type(exc).__name__)
+        return result
+
+    async def derivatives(self, symbol: str, now: datetime) -> Derivatives:
+        """Public compatibility path. The scanner uses funding() plus stored OI."""
+        result = await self.funding(symbol, now)
+        try:
+            row, _ = await self._cached(
                 "/openApi/swap/v2/quote/openInterest",
                 self.settings.scanner_derivatives_cache_seconds,
                 {"symbol": internal_to_bingx_symbol(symbol)},
-            ),
-            return_exceptions=True,
-        )
-        mark: Decimal | None = None
-        for name, data in (("funding", funding), ("oi", interest)):
-            if isinstance(data, asyncio.CancelledError):
-                raise data
-            if isinstance(data, BaseException):
-                result.errors.append(name + ": " + type(data).__name__)
-                logger.warning(
-                    "BingX derivative unavailable symbol=%s metric=%s error=%s",
-                    symbol,
-                    name,
-                    type(data).__name__,
-                )
-                continue
-            row, fetched_at = data
-            try:
-                if name == "funding":
-                    result.funding_rate = Decimal(row["lastFundingRate"])
-                    # The rate is current as of the fetch; settlement times differ.
-                    result.funding_timestamp = fetched_at
-                    result.next_funding_at = timestamp(row["nextFundingTime"])
-                    hours = row.get("fundingIntervalHours")
-                    result.funding_interval_hours = int(hours) if hours else None
-                    mark = Decimal(row["markPrice"])
-                else:
-                    notional = Decimal(row["openInterest"])  # USDT notional
-                    result.open_interest_notional = notional
-                    result.oi_timestamp = timestamp(row["time"])
-                    if mark and mark > 0:
-                        # Base quantity ≈ notional / mark price (same exchange, same cycle).
-                        result.open_interest = notional / mark
-            except (KeyError, TypeError, ValueError, InvalidOperation, ValidationError):
-                result.errors.append(name + ": malformed data")
-                logger.warning(
-                    "Malformed BingX derivative symbol=%s metric=%s", symbol, name
-                )
-        # BingX publishes no public OI history, so OI change stays unavailable.
+            )
+            result.open_interest_notional = Decimal(row["openInterest"])
+            result.oi_timestamp = timestamp(row["time"])
+            mark_row, _ = await self._funding(symbol)
+            mark = Decimal(mark_row["markPrice"])
+            if mark > 0:
+                result.open_interest = result.open_interest_notional / mark
+        except Exception as exc:  # noqa: BLE001 - optional metric failure
+            result.errors.append("oi: " + type(exc).__name__)
         return result

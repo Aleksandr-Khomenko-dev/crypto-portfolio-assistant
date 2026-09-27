@@ -152,7 +152,7 @@ async def test_scanner_bars_are_reused_instead_of_refetched(session):
     bars = after_ready(result, (0.2, -0.2))
     provider = BarsProvider([])
     await OutcomeService(session, provider, settings).process(
-        bars[0].close_time, {("AAAUSDT", "15m"): bars}
+        bars[0].close_time, {("BINANCE", "AAAUSDT", "15m"): bars}
     )
     session.refresh(outcome)
     assert provider.calls["candles"] == 0 and outcome.bars_processed == 1
@@ -284,7 +284,7 @@ async def test_telegram_research_commands(session):
 async def test_dry_run_scan_persists_telemetry_and_suppresses_telegram(
     session, client, monkeypatch
 ):
-    deliver = AsyncMock()
+    deliver = AsyncMock(return_value=0)
     monkeypatch.setattr("app.services.scanner_service.deliver_notifications", deliver)
     settings = Settings(
         scanner_dry_run=True,
@@ -322,7 +322,8 @@ async def test_dry_run_scan_persists_telemetry_and_suppresses_telegram(
     # With delivery enabled again, notifications run as before.
     settings.scanner_send_telegram = True
     await ScannerService(session, runtime).run()
-    deliver.assert_called_once()
+    # Delivery now runs as each symbol is persisted, plus a final pass.
+    assert deliver.call_count >= 1
 
 
 async def test_dry_run_runner_once_smoke(sqlite_database_url, monkeypatch):

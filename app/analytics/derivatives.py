@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from app.analytics.open_interest import horizon_changes
 from app.scanner.domain import Candle, Derivatives
 
 
@@ -18,6 +19,7 @@ def normalize_derivatives(
 ) -> Derivatives:
     result = data.model_copy(deep=True)
     result.oi_change_pct = result.price_change_pct = None
+    result.oi_change_by_horizon = {}
     result.interpretation = result.funding_state = "unavailable"
     if now is not None:
         for metric, timestamp in (
@@ -40,6 +42,12 @@ def normalize_derivatives(
             if rate >= extreme
             else ("CROWDED_SHORT" if rate <= -extreme else "NEUTRAL")
         )
+    data = result
+    data.history = [
+        p
+        for p in data.history
+        if now is None or p.observed_at is None or p.observed_at <= now
+    ]
     # Pair OI and price over the same completed 15m interval. Never mix current OI with an old close.
     closes = {b.open_time + timedelta(minutes=15): b.close for b in bars}
     matched = sorted(
@@ -74,4 +82,13 @@ def normalize_derivatives(
                 if price < 0 and oi < 0
                 else "MIXED"
             )
+    if closes:
+        # 15m/1h/4h deltas anchored at the latest CLOSED boundary; None when either
+        # endpoint was never observed (insufficient history is not zero change).
+        points = {
+            p.timestamp: p.contracts
+            for p in data.history
+            if now is None or p.timestamp <= now
+        }
+        result.oi_change_by_horizon = horizon_changes(points, max(closes))
     return result

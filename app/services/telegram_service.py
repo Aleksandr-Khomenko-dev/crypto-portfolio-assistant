@@ -28,10 +28,24 @@ class TelegramService:
             portfolio.telegram_chat_id, format_digest_message(digest.content)
         )
 
-    async def send_scanner(self, chat_id: str, text: str) -> bool:
+    async def send_scanner(self, chat_id: str, text: str) -> list[int]:
+        """Returns Telegram message ids (empty when disabled); truthy when sent."""
         if not self.enabled:
-            return False
-        return await self._send_text(chat_id, text)
+            return []
+        return await self._deliver(chat_id, text)
+
+    async def send_message(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: int | None = None,
+        buttons: list[tuple[str, str]] | None = None,
+    ) -> list[int]:
+        """HTML message; `reply_to` threads it under an earlier alert when possible;
+        `buttons` are (label, url) link buttons, e.g. open on TradingView."""
+        if not self.enabled:
+            return []
+        return await self._deliver(chat_id, text, reply_to, buttons)
 
     async def send_test(self, chat_id: str, text: str) -> list[int]:
         """Connectivity check: returns Telegram message ids (empty if disabled)."""
@@ -42,8 +56,32 @@ class TelegramService:
     async def _send_text(self, chat_id: str, text: str) -> bool:
         return bool(await self._deliver(chat_id, text))
 
-    async def _deliver(self, chat_id: str, text: str) -> list[int]:
+    async def _deliver(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: int | None = None,
+        buttons: list[tuple[str, str]] | None = None,
+    ) -> list[int]:
         from aiogram.enums import ParseMode
+        from aiogram.types import (
+            InlineKeyboardButton,
+            InlineKeyboardMarkup,
+            ReplyParameters,
+        )
+
+        markup = (
+            InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text=label, url=url)
+                        for label, url in buttons
+                    ]
+                ]
+            )
+            if buttons
+            else None
+        )
 
         token = self.settings.telegram_bot_token
         if not token:
@@ -52,12 +90,19 @@ class TelegramService:
         try:
             # Split into chunks ≤4096 chars (Telegram limit) preserving line boundaries
             chunks = _split_message(text, limit=4096)
-            ids = []
+            ids: list[int] = []
             for chunk in chunks:
                 message = await bot.send_message(
                     chat_id=chat_id,
                     text=chunk,
                     parse_mode=ParseMode.HTML,
+                    reply_parameters=ReplyParameters(
+                        message_id=reply_to, allow_sending_without_reply=True
+                    )
+                    if reply_to and not ids
+                    else None,
+                    # Buttons go on the last chunk only.
+                    reply_markup=markup if chunk is chunks[-1] else None,
                 )
                 ids.append(message.message_id)
             return ids
