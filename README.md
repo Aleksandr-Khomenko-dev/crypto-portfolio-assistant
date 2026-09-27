@@ -317,6 +317,28 @@ The configuration changed from the older DropsTab-based version to a DB-first, p
 
 ## Market-wide futures scanner
 
+### 1H review signals with 4H direction
+
+The scanner's signal candle is now the last **closed 1H** candle. A recent 1H
+structural break, a closed 1H retest, 1H relative volume, a 1H risk plan, and
+the matching 4H trend are required for `READY`. High scores alone remain
+research observations. Telegram sends an active scanner alert only for a
+`READY` setup above the alert threshold, at most once per closed 1H candle.
+The stored result explicitly records `signal_timeframe=1h`; existing 15m
+snapshots remain readable. On the first new scan, active 15m episodes are
+retired and fresh 1H episodes begin without sending migration expiry alerts.
+
+15m candles are still collected for OI/price alignment and for historical 15m
+outcomes. Early and fast events continue to be recorded for research, but
+their Telegram delivery defaults to off. **Existing `.env` files with
+`CPDA_EARLY_SEND_TELEGRAM=true` or `CPDA_FAST_SEND_TELEGRAM=true` override
+these defaults; change both to `false` for the 1H-only public feed.**
+
+This does not establish a profitable strategy: score is confluence points,
+and live, fee-aware outcomes still need forward evaluation. Broadcast alerts
+currently go to the single `CPDA_SCANNER_TELEGRAM_CHAT_ID`; opening the bot
+through a public link does not subscribe another user to notifications.
+
 The portfolio application now also scans public USDT perpetual markets. It remains read-only: no exchange credentials, orders, wallets or transfers. An **85/100 score means 85 points of model confluence**, never an 85% win probability. Even a high score can require a retest or fail the risk filter.
 
 - Universe: trading crypto perpetual contracts, minimum $10m quote volume, top 100 by default, whitelist/blacklist and hard market cap.

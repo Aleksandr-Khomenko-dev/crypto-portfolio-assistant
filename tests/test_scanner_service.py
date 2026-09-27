@@ -122,6 +122,42 @@ def test_setup_dedup_durable_cooldown_ready_expiry_and_invalidation(session):
     assert should_notify(row, now, settings)
 
 
+
+def test_public_alert_requires_ready_and_new_closed_hourly_candle(session):
+    now = datetime.now(UTC)
+    settings, _, result, row = save_ready(session, now)
+    row.readiness = "WAIT_RETEST"
+    row.score = 95
+    assert not should_notify(row, now, settings)
+    row.readiness = "READY"
+    assert should_notify(row, now, settings)
+    row.notified_data = {
+        "score": row.score,
+        "state": row.state,
+        "readiness": "READY",
+        "lifecycle": "ACTIVE",
+        "signal_candle_closed_at": result.candle_closed_at.isoformat(),
+    }
+    row.last_notified_at = now
+    row.score = 100
+    assert not should_notify(row, now + timedelta(hours=2), settings)
+
+
+def test_legacy_15m_episode_is_retired_on_first_1h_scan(session):
+    now = datetime.now(UTC)
+    settings, repo, result, old = save_ready(session, now)
+    old_snapshot = session.get(ScannerSnapshot, old.snapshot_id)
+    old_snapshot.data = {**old_snapshot.data, "signal_timeframe": "15m"}
+    session.commit()
+    result.created_at += timedelta(minutes=5)
+    repo.save(session.scalar(select(ScannerRun.id)), result, settings)
+    session.commit()
+    assert old.lifecycle == "EXPIRED"
+    assert not should_notify(old, result.created_at, settings)
+    active = session.scalars(select(MarketSetup).where(MarketSetup.lifecycle == "ACTIVE")).all()
+    assert len(active) == 1 and active[0].id != old.id
+
+
 async def test_notification_success_failure_and_html_safety(session, monkeypatch):
     settings, repo, result, row = save_ready(
         session, scanner_telegram_chat_id="123", telegram_bot_token="123456:secret"

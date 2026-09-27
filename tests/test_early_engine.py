@@ -675,7 +675,7 @@ class Recorder:
 
 def watcher_for(url, sender=None, **settings):
     return FastMarketWatcher(
-        Settings(**settings),
+        Settings(**{"fast_send_telegram": True, "early_send_telegram": True, **settings}),
         get_session_factory(url),
         FakeBingX(),
         sender,
@@ -916,7 +916,7 @@ async def test_synthetic_gas_sequence_ignition_to_retest_confirmed(sqlite_databa
     retest confirmed. Every message is labelled TEST / NOT A REAL TRADING SIGNAL."""
     sender = Recorder()
     watcher = FastMarketWatcher(
-        Settings(),
+        Settings(fast_send_telegram=True, early_send_telegram=True),
         get_session_factory(sqlite_database_url),
         FakeBingX(),
         sender,

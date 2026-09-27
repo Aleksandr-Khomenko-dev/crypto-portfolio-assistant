@@ -107,7 +107,7 @@ def _meaning(setup: Setup, result: ScannerResult, t: dict[str, str]) -> list[str
         lines.append(t["meaning.trend_one"])
     elif against:
         lines.append(t["meaning.trend_against"])
-    micro = result.frames["15m"].micro
+    micro = result.frames[result.signal_timeframe].micro
     event = micro.breaks[-1] if micro.breaks else None
     blocks = setup.blocks
     if event and event.direction == setup.direction and event.kind in ("BOS", "CHoCH"):
@@ -156,7 +156,7 @@ def _active(
     setup: Setup, result: ScannerResult, t: dict[str, str], news: list | None = None
 ) -> list[str]:
     na = t["na"]
-    frame = result.frames["15m"]
+    frame = result.frames[result.signal_timeframe]
     tech = frame.technical
     derivative = result.derivatives
     icon, title = t[f"icon.{setup.state}"], t[f"state.{setup.state}"]
@@ -198,6 +198,7 @@ def _active(
         f"{icon} <b>{title.upper()}</b> · {DIRECTION_BADGE[setup.direction]}",
         t["separator"],
         _market_line(result, setup.symbol),
+        f"🕐 Таймфрейм сигнала: {result.signal_timeframe.upper()} · контекст: 4H",
         t["score"].format(score=setup.score),
         t["score_note"],
         "",
@@ -211,9 +212,9 @@ def _active(
         f"{dot(trend_1h, setup.direction)} "
         + t["context_1h"].format(value=t.get(f"trend.{trend_1h}", escape(trend_1h))),
         f"{dot(_break_trend(event, frame.micro.trend), setup.direction)} "
-        + t["structure_15m"].format(value=_break_text(event, frame.micro.trend, t)),
+        + t[f"structure_{result.signal_timeframe}"].format(value=_break_text(event, frame.micro.trend, t)),
         f"{dot(tech.alignment, setup.direction)} "
-        + t["ema_15m"].format(
+        + t[f"ema_{result.signal_timeframe}"].format(
             value=t.get(f"ema.{tech.alignment}", escape(tech.alignment))
         ),
         t["indicators"].format(

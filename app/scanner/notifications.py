@@ -25,7 +25,15 @@ def should_notify(setup: MarketSetup, now: datetime, settings: Settings) -> bool
         return False
     if setup.lifecycle != "ACTIVE":
         return "score" in old and old.get("lifecycle") != setup.lifecycle
-    if setup.score < settings.scanner_alert_score or utc(setup.expires_at) <= now:
+    if (
+        setup.score < settings.scanner_alert_score
+        or setup.readiness != "READY"
+        or utc(setup.expires_at) <= now
+    ):
+        return False
+    # Only one alert per closed 1h candle, even if live derivatives change its score.
+    snapshot_close = (setup.data or {}).get("signal_candle_closed_at")
+    if snapshot_close and old.get("signal_candle_closed_at") == snapshot_close:
         return False
     ready_sent = old.get("ready_notified", old.get("readiness") == "READY")
     if "score" in old and setup.readiness == "READY" and not ready_sent:
@@ -188,6 +196,7 @@ async def deliver_notifications(
                     "ready_notified", old.get("readiness") == "READY"
                 )
                 or setup.readiness == "READY",
+                "signal_candle_closed_at": (setup.data or {}).get("signal_candle_closed_at"),
                 # The first alert's message: news follow-ups reply under it.
                 "telegram_message_id": old.get("telegram_message_id") or message_id,
             }

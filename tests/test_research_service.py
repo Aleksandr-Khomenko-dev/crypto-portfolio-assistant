@@ -61,14 +61,14 @@ def candle(start, minutes, high, low):
 
 
 def after_ready(result, *ranges_in_r):
-    """15m candles following the READY candle, given (high_R, low_R) multiples."""
+    """1h candles following the READY candle, given (high_R, low_R) multiples."""
     setup = result.setups[0]
     entry, risk = result.price, result.price - setup.risk.invalidation
     start = result.candle_closed_at + timedelta(milliseconds=1)
     return [
         candle(
-            start + timedelta(minutes=15 * i),
-            15,
+            start + timedelta(hours=i),
+            60,
             entry + Decimal(str(h)) * risk,
             entry + Decimal(str(lo)) * risk,
         )
@@ -152,7 +152,7 @@ async def test_scanner_bars_are_reused_instead_of_refetched(session):
     bars = after_ready(result, (0.2, -0.2))
     provider = BarsProvider([])
     await OutcomeService(session, provider, settings).process(
-        bars[0].close_time, {("BINANCE", "AAAUSDT", "15m"): bars}
+        bars[0].close_time, {("BINANCE", "AAAUSDT", "1h"): bars}
     )
     session.refresh(outcome)
     assert provider.calls["candles"] == 0 and outcome.bars_processed == 1
@@ -165,8 +165,8 @@ async def test_same_bar_ambiguity_uses_lower_timeframe_when_available(session):
     risk = entry - result.setups[0].risk.invalidation
     kids = [
         candle(
-            parent.open_time + timedelta(minutes=5 * i),
-            5,
+            parent.open_time + timedelta(minutes=15 * i),
+            15,
             entry + h * risk,
             entry + lo * risk,
         )
@@ -175,6 +175,7 @@ async def test_same_bar_ambiguity_uses_lower_timeframe_when_available(session):
                 (Decimal("0.6"), Decimal("-0.1")),
                 (Decimal("1.2"), Decimal(0)),
                 (Decimal("0.5"), Decimal("-1.2")),
+                (Decimal("0.2"), Decimal("-0.1")),
             ]
         )
     ]

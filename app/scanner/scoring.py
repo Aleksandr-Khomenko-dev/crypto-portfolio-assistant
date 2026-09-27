@@ -49,28 +49,28 @@ def score_setup(
     settings: Settings,
 ) -> Setup:
     trend = "BULLISH" if direction == Direction.LONG else "BEARISH"
-    low, hourly, high = frames["15m"], frames["1h"], frames["4h"]
-    t, price = low.technical, float(low.candle.close)
+    hourly, high = frames["1h"], frames["4h"]
+    t, price = hourly.technical, float(hourly.candle.close)
     blocks = dict.fromkeys(BLOCK_CAPS, 0)
     # Correlated observations share a capped block; BOS and CHoCH are alternatives.
     blocks["regime"] = (8 if high.technical.alignment == trend else 0) + (
         7 if hourly.technical.alignment == trend else 0
     )
-    event = low.micro.breaks[-1] if low.micro.breaks else None
+    event = hourly.micro.breaks[-1] if hourly.micro.breaks else None
     recent = bool(
         event
         and event.direction == direction
         and event.kind != "INITIAL_BREAK"
-        and (low.candle.close_time - event.timestamp).total_seconds()
-        <= settings.scanner_event_max_bars * 900
-        and low.candle.close_time >= event.timestamp
+        and (hourly.candle.close_time - event.timestamp).total_seconds()
+        <= settings.scanner_event_max_bars * 3600
+        and hourly.candle.close_time >= event.timestamp
     )
     blocks["structure"] = (10 if hourly.macro.trend == trend else 0) + (
-        10 if recent else 5 if low.micro.trend == trend else 0
+        10 if recent else 5 if hourly.micro.trend == trend else 0
     )
     relevant = [
         z
-        for frame in frames.values()
+        for frame in (hourly, high)
         for z in (frame.supports if direction == Direction.LONG else frame.resistances)
     ]
     near_zone = any(
@@ -93,22 +93,22 @@ def score_setup(
         )
         and max(float(g.lower) - price, price - float(g.upper), 0) / t.atr
         <= settings.scanner_location_atr
-        for frame in frames.values()
+        for frame in (hourly, high)
         for g in frame.fvgs
     )
-    sweep = low.micro.sweep == direction
+    sweep = hourly.micro.sweep == direction
     location = near_zone or near_gap or sweep
     blocks["location"] = max(
         12 if near_zone else 0, 10 if near_gap else 0, 15 if sweep else 0
     )
-    retest = recent and low.micro.retest == direction
-    body = float(low.candle.close - low.candle.open) * (
+    retest = recent and hourly.micro.retest == direction
+    body = float(hourly.candle.close - hourly.candle.open) * (
         1 if direction == Direction.LONG else -1
     )
     wick = (
-        float(min(low.candle.open, low.candle.close) - low.candle.low)
+        float(min(hourly.candle.open, hourly.candle.close) - hourly.candle.low)
         if direction == Direction.LONG
-        else float(low.candle.high - max(low.candle.open, low.candle.close))
+        else float(hourly.candle.high - max(hourly.candle.open, hourly.candle.close))
     )
     rejection = body > 0 and wick > max(body, t.atr * 0.25)
     displacement = body >= t.atr
@@ -119,7 +119,7 @@ def score_setup(
         8
         if displacement
         and not sweep
-        and not (event and event.timestamp == low.candle.close_time)
+        and not (event and event.timestamp == hourly.candle.close_time)
         else 0,
     )
     momentum = (
@@ -161,10 +161,10 @@ def score_setup(
             Readiness.WAIT_LOCATION,
             "Wait for support/resistance, imbalance or reclaimed sweep location",
         )
-    elif not recent or hourly.macro.trend != trend:
+    elif high.technical.alignment != trend or hourly.macro.trend != trend or not recent:
         readiness, message = (
             Readiness.WAIT_STRUCTURE,
-            "Wait for a recent structural break aligned with 1h structure",
+            "Wait for a closed 1h structural break aligned with 4h trend",
         )
     elif not retest:
         readiness, message = (
@@ -214,10 +214,11 @@ def build_result(
     ]
     return ScannerResult(
         symbol=symbol,
-        price=frames["15m"].candle.close,
+        signal_timeframe="1h",
+        price=frames["1h"].candle.close,
         observed_price=ticker.price,
         observed_at=ticker.timestamp,
-        candle_closed_at=frames["15m"].candle.close_time,
+        candle_closed_at=frames["1h"].candle.close_time,
         created_at=now,
         expires_at=now + timedelta(minutes=settings.scanner_setup_expiry_minutes),
         long_score=setups[0].score,

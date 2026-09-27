@@ -35,7 +35,7 @@ def start_outcome(
     candidate: Setup,
     result: ScannerResult,
     snapshot_id: UUID,
-    timeframe: str = "15m",
+    timeframe: str = "1h",
 ) -> SetupOutcome | None:
     """Begin tracking at the episode's FIRST READY closed candle; later READYs are no-ops."""
     if candidate.readiness != Readiness.READY or candidate.risk.invalidation is None:

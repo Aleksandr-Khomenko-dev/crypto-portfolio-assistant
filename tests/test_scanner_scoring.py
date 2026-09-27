@@ -11,10 +11,11 @@ from app.scanner.domain import (
     Direction,
     MarketContext,
     StructureBreak,
+    Ticker,
     Zone,
 )
 from app.scanner.risk import risk_plan
-from app.scanner.scoring import BLOCK_CAPS, score_setup, signal_state
+from app.scanner.scoring import BLOCK_CAPS, build_result, score_setup, signal_state
 from app.scanner.universe import filter_universe
 from tests.scanner_fixtures import FixtureFutures, candles
 
@@ -112,7 +113,7 @@ def test_configurable_states(score, state):
 
 def test_risk_no_room_extension_and_missing_stop():
     frames = aligned_frames()
-    frames["15m"].technical.extension_atr = 100
+    frames["1h"].technical.extension_atr = 100
     assert risk_plan(Direction.LONG, frames, Settings()).reason == "OVEREXTENDED"
     for frame in frames.values():
         frame.resistances[0].lower = frame.candle.close
@@ -124,7 +125,7 @@ def test_risk_no_room_extension_and_missing_stop():
 
 def test_high_score_is_not_automatically_ready_and_risk_off_penalty():
     frames = aligned_frames()
-    frames["15m"].micro.retest = None
+    frames["1h"].micro.retest = None
     setup = score_setup(
         "ALTUSDT",
         Direction.LONG,
@@ -143,8 +144,8 @@ def test_high_score_is_not_automatically_ready_and_risk_off_penalty():
         Settings(),
     )
     assert bearish.score < setup.score
-    frames["15m"].micro.retest = Direction.LONG
-    frames["15m"].technical.rvol = None
+    frames["1h"].micro.retest = Direction.LONG
+    frames["1h"].technical.rvol = None
     assert (
         score_setup(
             "ALTUSDT",
@@ -156,6 +157,30 @@ def test_high_score_is_not_automatically_ready_and_risk_off_penalty():
         ).readiness
         == "WAIT_VOLUME"
     )
+
+
+def test_1h_signal_requires_closed_hourly_structure_and_4h_alignment():
+    frames = aligned_frames()
+    context = MarketContext(state="BULLISH")
+    baseline = score_setup("AAAUSDT", Direction.LONG, frames, Derivatives(), context, Settings())
+    assert baseline.readiness == "READY"
+    frames["15m"].micro.retest = None
+    frames["15m"].micro.breaks = []
+    frames["15m"].technical.rvol = None
+    assert score_setup("AAAUSDT", Direction.LONG, frames, Derivatives(), context, Settings()).readiness == "READY"
+    frames["4h"].technical.alignment = "BEARISH"
+    assert score_setup("AAAUSDT", Direction.LONG, frames, Derivatives(), context, Settings()).readiness == "WAIT_STRUCTURE"
+    frames["4h"].technical.alignment = "BULLISH"
+    frames["1h"].micro.retest = None
+    assert score_setup("AAAUSDT", Direction.LONG, frames, Derivatives(), context, Settings()).readiness == "WAIT_RETEST"
+    now = datetime.now(UTC)
+    result = build_result(
+        "AAAUSDT", frames, Derivatives(), context,
+        Ticker(symbol="AAAUSDT", price=112, quote_volume=20_000_000, timestamp=now), now, Settings(),
+    )
+    assert result.signal_timeframe == "1h"
+    assert result.price == frames["1h"].candle.close
+    assert result.candle_closed_at == frames["1h"].candle.close_time
 
 
 async def test_universe_filters_and_context_availability():

@@ -213,7 +213,7 @@ class ScannerService:
 
     async def _frames(
         self, symbol: str, now: datetime
-    ) -> tuple[dict[str, FrameAnalysis], list[Candle]]:
+    ) -> tuple[dict[str, FrameAnalysis], list[Candle], list[Candle]]:
         bars = await asyncio.gather(
             *(self.provider.candles(symbol, tf, now) for tf in TIMEFRAMES),
             return_exceptions=True,
@@ -236,9 +236,12 @@ class ScannerService:
             }
         )
         self.runtime.frame_history[symbol] = frames
-        return frames, [
-            b for b in history[0] if b.close_time <= frames["15m"].candle.close_time
-        ]
+        # Episode invalidation must use the same closed bars as its 1h trigger.
+        return (
+            frames,
+            [b for b in history[1] if b.close_time <= frames["1h"].candle.close_time],
+            [b for b in history[0] if b.close_time <= frames["15m"].candle.close_time],
+        )
 
     async def _run(self, now: datetime, only: str | None = None) -> RunRead:
         started = time.monotonic()
@@ -359,18 +362,20 @@ class ScannerService:
             semaphore = asyncio.Semaphore(self.settings.scanner_concurrency)
 
             validation_bars: dict[str, list[Candle]] = {}
+            oi_price_bars: dict[str, list[Candle]] = {}
 
             async def analyze(symbol: str) -> ScannerResult | None:
                 async with semaphore:
                     try:
                         if symbol in failed_context:
                             raise ValueError("Context data already failed this cycle")
-                        frames, bars = (
+                        frames, bars, oi_bars = (
                             cached_frames[symbol]
                             if symbol in cached_frames
                             else await self._frames(symbol, now)
                         )
                         validation_bars[symbol] = bars
+                        oi_price_bars[symbol] = oi_bars
                         observed_at = now + timedelta(
                             seconds=time.monotonic() - started
                         )
@@ -412,7 +417,7 @@ class ScannerService:
                                     raw.oi_history_source = "SELF_RECORDED"
                                 derivatives = normalize_derivatives(
                                     raw,
-                                    bars,
+                                    oi_bars,
                                     self.settings.scanner_funding_extreme,
                                     observed_at,
                                 )
@@ -507,8 +512,9 @@ class ScannerService:
                         ).process(
                             now,
                             {
-                                (exchange, symbol, "15m"): bars
-                                for symbol, bars in validation_bars.items()
+                                (exchange, symbol, timeframe): bars
+                                for timeframe, histories in (("1h", validation_bars), ("15m", oi_price_bars))
+                                for symbol, bars in histories.items()
                             },
                         )
                     )
