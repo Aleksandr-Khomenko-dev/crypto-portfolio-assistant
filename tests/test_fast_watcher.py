@@ -198,7 +198,7 @@ class Recorder:
 
 def watcher_for(url, sender=None, oi=None, rescan=None, **settings):
     return FastMarketWatcher(
-        Settings(**settings), get_session_factory(url), FakeBingX(oi), sender, rescan
+        Settings(**{"fast_send_telegram": True, "early_send_telegram": True, **settings}), get_session_factory(url), FakeBingX(oi), sender, rescan
     )
 
 

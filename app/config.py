@@ -168,7 +168,7 @@ class Settings(BaseSettings):
     news_latency_slo_ms: int = Field(default=3000, ge=100)
     # Fast market watcher: EARLY WARNING only (never a trading score / alert rule).
     fast_enabled: bool = True
-    fast_send_telegram: bool = True
+    fast_send_telegram: bool = False
     fast_symbols_per_connection: int = Field(default=100, ge=10, le=200)
     fast_min_quote_volume_usd: float = Field(default=10_000_000, ge=0)
     fast_sigma_k: float = Field(default=4.0, gt=0)
@@ -188,7 +188,7 @@ class Settings(BaseSettings):
     early_enabled: bool = True  # early trend ignition + breakout/retest episodes
     early_patterns_enabled: bool = True  # FORMATION_WATCH candidates
     early_zone_watch_enabled: bool = True
-    early_send_telegram: bool = True
+    early_send_telegram: bool = False
     early_zone_min_touches: int = Field(default=2, ge=1)
     early_approach_atr: float = Field(default=0.35, gt=0, le=2)
     early_break_atr: float = Field(default=0.10, gt=0, le=2)
@@ -245,7 +245,7 @@ class Settings(BaseSettings):
     scanner_dry_run: bool = False
     scanner_send_telegram: bool = True
     # Setup-outcome horizon in closed bars of the setup's trigger timeframe
-    # (scanner setups currently trigger on 15m; 1h/4h are for future triggers).
+    # (scanner setups trigger on 1h; 4h provides trend confirmation).
     outcome_max_bars_15m: int = Field(default=96, ge=1, le=280)
     outcome_max_bars_1h: int = Field(default=72, ge=1, le=280)
     outcome_max_bars_4h: int = Field(default=42, ge=1, le=280)

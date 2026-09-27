@@ -65,6 +65,16 @@ class ScannerRepository:
                 .order_by(MarketSetup.created_at.desc())
                 .limit(1)
             )
+            migrated = False
+            if previous and previous.lifecycle == "ACTIVE":
+                previous_snapshot = self.session.get(ScannerSnapshot, previous.snapshot_id)
+                if previous_snapshot and previous_snapshot.data.get("signal_timeframe", "15m") != result.signal_timeframe:
+                    # A 15m episode cannot be continued with 1h candles or a 1h risk plan.
+                    # Retain its history but avoid flooding users with migration expiries.
+                    previous.lifecycle = "EXPIRED"
+                    previous.updated_at = result.created_at
+                    previous.notified_data = {**(previous.notified_data or {}), "lifecycle": "EXPIRED"}
+                    migrated = True
             if previous and previous.lifecycle == "ACTIVE":
                 level = previous.initial_invalidation
                 observed = (
@@ -98,13 +108,13 @@ class ScannerRepository:
                 )
                 previous.price, previous.data, previous.updated_at = (
                     result.price,
-                    candidate.model_dump(mode="json"),
+                    {**candidate.model_dump(mode="json"), "signal_candle_closed_at": result.candle_closed_at.isoformat()},
                     result.created_at,
                 )
                 start_outcome(self.session, previous.id, candidate, result, snapshot.id)
             elif candidate.score >= settings.scanner_watch_score:
                 # A terminal episode must not immediately resurrect from the same closed bar.
-                if previous and result.candle_closed_at <= utc(previous.updated_at):
+                if previous and not migrated and result.candle_closed_at <= utc(previous.updated_at):
                     continue
                 setup_id = uuid4()
                 self.session.add(
@@ -122,9 +132,9 @@ class ScannerRepository:
                         created_at=result.created_at,
                         updated_at=result.created_at,
                         expires_at=result.expires_at,
-                        data=candidate.model_dump(mode="json"),
+                        data={**candidate.model_dump(mode="json"), "signal_candle_closed_at": result.candle_closed_at.isoformat()},
                         last_notified_at=previous.last_notified_at
-                        if previous
+                        if previous and not migrated
                         else None,
                     )
                 )

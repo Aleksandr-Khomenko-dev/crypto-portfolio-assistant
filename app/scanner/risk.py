@@ -9,11 +9,11 @@ from app.scanner.domain import Direction, FrameAnalysis, RiskPlan
 def risk_plan(
     direction: Direction, frames: dict[str, FrameAnalysis], settings: Settings
 ) -> RiskPlan:
-    frame = frames["15m"]
+    frame = frames["1h"]
     price = frame.candle.close
     atr = Decimal(str(frame.technical.atr))
-    supports = [z for f in frames.values() for z in f.supports if z.lower < price]
-    resistances = [z for f in frames.values() for z in f.resistances if z.upper > price]
+    supports = [z for f in (frames["1h"], frames["4h"]) for z in f.supports if z.lower < price]
+    resistances = [z for f in (frames["1h"], frames["4h"]) for z in f.resistances if z.upper > price]
     if direction == Direction.LONG:
         stops = sorted(supports, key=lambda z: z.lower, reverse=True)
         targets = sorted(resistances, key=lambda z: z.lower)

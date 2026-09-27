@@ -237,6 +237,8 @@ class Setup(BaseModel):
 
 class ScannerResult(BaseModel):
     symbol: str
+    # Legacy snapshots without this field used 15m as their trigger candle.
+    signal_timeframe: Timeframe = "15m"
     market_type: str = "USDT_PERPETUAL"
     price: Decimal
     observed_price: Decimal
