@@ -281,3 +281,17 @@ indirect_terms = []
 coverage_tier = 2
 backer_tags = ["foundation", "corporate"]
 theme_tags = ["l1"]
+
+# Gold (BingX GOLD(XAU)-USDT). Macro feeds (Fed, BEA, ECB, White House, Telegram
+# headline channels) tag their items with this symbol directly; these phrases only
+# catch headlines that name gold itself.
+[[project]]
+symbol = "NCCOGOLD2USD"
+canonical_name = "Gold (XAU)"
+aliases = ["XAUUSD", "spot gold", "gold price", "gold prices", "gold futures", "bullion"]
+organizations = ["World Gold Council"]
+ecosystem_terms = []
+indirect_terms = []
+coverage_tier = 1
+backer_tags = []
+theme_tags = ["commodity", "safe_haven"]

@@ -199,8 +199,219 @@ FRESHNESS_WEIGHT = {
 # Regulators publish mostly non-crypto news: without crypto context it is noise here.
 REGULATORY_PROVIDERS = {"sec_press", "cftc_press"}
 
+# Macro sources for gold. Their items are classified ONLY by the macro rules below
+# (on the headline), so crypto rules ("upgrade", "partner") never fire on a Fed text.
+MACRO_PROVIDERS = frozenset(
+    {
+        "fed_monetary",
+        "fed_speeches",
+        "fed_testimony",
+        "bea_releases",
+        "ecb_press",
+        "whitehouse_news",
+        "telegram_channels",
+    }
+)
+FED = r"(?:\bFed\b|Federal Reserve|\bFOMC\b|Federal Open Market Committee)"
+# (rule id, pattern, event, severity, direction for gold, providers or None = any).
+# First match wins. Severity >= 90 can become CRITICAL (urgent alert) with good
+# sourcing; a single headline channel needs >= 98 (see `importance`).
+MACRO_RULES: tuple[
+    tuple[str, str, EventType, int, NewsDirection, frozenset[str] | None], ...
+] = (
+    (
+        "ecb_policy",
+        r"monetary policy decisions?|key ECB interest rates|deposit facility rate",
+        EventType.MONETARY_POLICY,
+        80,
+        U,
+        frozenset({"ecb_press"}),
+    ),
+    (
+        "fed_emergency",
+        rf"\b(?:emergency|unscheduled|intermeeting)\b.*{FED}|{FED}.*\b(?:emergency|unscheduled|intermeeting)\b",
+        EventType.MONETARY_POLICY,
+        99,
+        U,
+        None,
+    ),
+    (
+        "fed_cut",
+        (
+            rf"{FED}.*\b(?:cuts?|lowers?|lowered|reduces?)\b.{{0,30}}\b(?:rates?|target range)\b|"
+            r"\bFed (?:rate )?cut\b"
+        ),
+        EventType.MONETARY_POLICY,
+        98,
+        S,
+        None,
+    ),
+    (
+        "fed_hike",
+        (
+            rf"{FED}.*\b(?:raises?|hikes?|increases?)\b.{{0,30}}\b(?:rates?|target range)\b|"
+            r"\bFed (?:rate )?hike\b"
+        ),
+        EventType.MONETARY_POLICY,
+        98,
+        A,
+        None,
+    ),
+    (
+        "fomc_statement",
+        (
+            rf"FOMC statement|{FED}.*\b(?:holds?|keeps?|leaves?|maintains?)\b.{{0,30}}\brates?\b|"
+            r"federal funds rate|target range"
+        ),
+        EventType.MONETARY_POLICY,
+        96,
+        U,
+        None,
+    ),
+    (
+        "fomc_minutes",
+        rf"\bminutes\b.*{FED}|{FED}.*\bminutes\b",
+        EventType.MONETARY_POLICY,
+        85,
+        U,
+        None,
+    ),
+    (
+        "fed_chair",
+        (
+            rf"(?<!Vice )\bChair(?:man|woman)?\b.*{FED}|{FED}.*(?<!Vice )\bChair(?:man|woman)?\b|"
+            r"semiannual monetary policy report"
+        ),
+        EventType.MONETARY_POLICY,
+        90,
+        U,
+        None,
+    ),
+    # Data releases: the headline with the number is what moves gold, so a single
+    # headline channel may alert (98 x aggregator quality -> CRITICAL, preliminary).
+    (
+        "inflation_data",
+        (
+            r"\bCPI\b|\bPCE\b|\bPPI\b|consumer price index|producer price|"
+            r"personal income and outlays"
+        ),
+        EventType.MACRO_DATA,
+        98,
+        U,
+        None,
+    ),
+    (
+        "jobs_data",
+        r"non-?farm|\bpayrolls?\b|unemployment rate|employment situation",
+        EventType.MACRO_DATA,
+        98,
+        U,
+        None,
+    ),
+    (
+        "jobless_claims",
+        r"jobless claims|initial claims",
+        EventType.MACRO_DATA,
+        80,
+        U,
+        None,
+    ),
+    ("gdp", r"\bGDP\b|gross domestic product", EventType.MACRO_DATA, 90, U, None),
+    (
+        "war",
+        (
+            r"\b(?:war|invasion|invades?|airstrikes?|missiles?|military (?:action|operation|strikes?))\b|"
+            r"attack(?:ed|s)? on|nuclear (?:test|strike|weapons?|threat)|declares? (?:martial law|war)"
+        ),
+        EventType.GEOPOLITICS,
+        98,
+        S,
+        None,
+    ),
+    ("sanctions", r"\bsanctions?\b", EventType.GEOPOLITICS, 85, S, None),
+    (
+        "tariffs",
+        r"\btariffs?\b|trade war|import dut(?:y|ies)|\bduties on\b",
+        EventType.TRADE_POLICY,
+        90,
+        U,
+        None,
+    ),
+    (
+        "trade_deal",
+        r"trade (?:deal|agreement|talks|truce)",
+        EventType.TRADE_POLICY,
+        80,
+        U,
+        None,
+    ),
+    (
+        "fiscal",
+        r"debt ceiling|government shutdown|\bdefault\b|treasury (?:refunding|auction)",
+        EventType.MACRO_DATA,
+        80,
+        U,
+        None,
+    ),
+    (
+        "gold_direct",
+        r"\bgold\b|\bbullion\b|\bXAU",
+        EventType.GOLD_MARKET,
+        75,
+        U,
+        frozenset({"telegram_channels", "whitehouse_news"}),
+    ),
+)
+# Severity of an official macro item that matched no rule (0 = noise, never alerted).
+MACRO_DEFAULT = {
+    "fed_monetary": 80,  # everything on the Fed monetary-policy feed matters
+    "fed_testimony": 85,
+    "fed_speeches": 55,
+    "bea_releases": 40,
+}
+
+
+def classify_macro(item: NormalizedNewsItem) -> Classification:
+    text = item.title
+    for rule, pattern, event, severity, direction, providers in MACRO_RULES:
+        if providers is not None and item.provider not in providers:
+            continue
+        if re.search(pattern, text, re.IGNORECASE):
+            return Classification(
+                event_type=event,
+                direction=direction,
+                severity=severity,
+                rule="macro:" + rule,
+                rule_version=RULE_VERSION,
+            )
+    severity = MACRO_DEFAULT.get(item.provider, 0)
+    if severity == 0:
+        return Classification(
+            event_type=EventType.OTHER,
+            direction=U,
+            severity=0,
+            noise=True,
+            noise_reason="not_macro_relevant",
+            rule="noise:not_macro_relevant",
+            rule_version=RULE_VERSION,
+        )
+    event = (
+        EventType.MACRO_DATA
+        if item.provider == "bea_releases"
+        else EventType.MONETARY_POLICY
+    )
+    return Classification(
+        event_type=event,
+        direction=U,
+        severity=severity,
+        rule="macro:default",
+        rule_version=RULE_VERSION,
+    )
+
 
 def classify(item: NormalizedNewsItem) -> Classification:
+    if item.provider in MACRO_PROVIDERS:
+        return classify_macro(item)
     text = f"{item.title}\n{item.summary}"
     for reason, pattern in NOISE:
         if re.search(pattern, text, re.IGNORECASE):

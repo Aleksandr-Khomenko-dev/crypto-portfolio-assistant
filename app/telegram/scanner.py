@@ -11,6 +11,7 @@ from typing import Literal
 
 from app.scanner.domain import (
     Direction,
+    MarketContext,
     Readiness,
     ScannerResult,
     Setup,
@@ -18,6 +19,7 @@ from app.scanner.domain import (
     StructureBreak,
     Zone,
 )
+from app.scanner.universe import display_symbol
 from app.telegram.i18n import catalog
 
 EXCHANGE_NAMES = {"BINGX": "BingX", "BINANCE": "Binance"}
@@ -80,7 +82,7 @@ def _break_trend(event: StructureBreak | None, trend: str) -> str:
 
 def _market_line(result: ScannerResult, symbol: str) -> str:
     name = EXCHANGE_NAMES.get(result.exchange, result.exchange)
-    return f"🪙 <b>{escape(symbol)}</b> · {escape(name)}"
+    return f"🪙 <b>{escape(display_symbol(symbol))}</b> · {escape(name)}"
 
 
 def _footer(result: ScannerResult, mode: Mode, t: dict[str, str]) -> list[str]:
@@ -112,11 +114,12 @@ def _meaning(setup: Setup, result: ScannerResult, t: dict[str, str]) -> list[str
     blocks = setup.blocks
     if event and event.direction == setup.direction and event.kind in ("BOS", "CHoCH"):
         lines.append(t["meaning.break"].format(kind=event.kind))
+    gold = result.context.kind == "GOLD_MACRO"
     for block, key in (
         ("location", "meaning.location"),
         ("trigger", "meaning.trigger"),
         ("volume_momentum", "meaning.volume"),
-        ("market_context", "meaning.context"),
+        ("market_context", "meaning.macro" if gold else "meaning.context"),
     ):
         # A block scores only when its condition held; its points are the evidence.
         if blocks.get(block, 0) > (2 if block == "market_context" else 0):
@@ -145,11 +148,49 @@ def _watch_next(setup: Setup, result: ScannerResult, t: dict[str, str]) -> list[
     ):
         items.append(t["next.oi_building"])
     state = result.context.state
-    if state in ("RISK_OFF", "HIGH_VOLATILITY") or state == (
-        "BEARISH" if setup.direction == Direction.LONG else "BULLISH"
-    ):
+    against = state == ("BEARISH" if setup.direction == Direction.LONG else "BULLISH")
+    if result.context.kind == "GOLD_MACRO":
+        if against and readiness != Readiness.WAIT_MACRO:
+            items.append(t["next.macro"].format(value=t[f"macro.state.{state}"]))
+    elif state in ("RISK_OFF", "HIGH_VOLATILITY") or against:
         items.append(t["next.context"].format(value=t[f"context.{state}"]))
     return [f"• {item}" for item in items[:4]]
+
+
+def macro_lines(
+    context: MarketContext, direction: Direction, t: dict[str, str]
+) -> list[str]:
+    """Gold macro block: DXY / US10Y / VIX rows, the verdict and any event pause."""
+    na = t["na"]
+    rows = context.assets
+    dxy, rates, vix = rows.get("DXY", {}), rows.get("US10Y", {}), rows.get("VIX", {})
+    dxy_text = (
+        f"{dxy['close']} · {t['macro.trend.' + str(dxy['trend'])]}" if dxy else na
+    )
+    rates_text = (
+        f"{rates['yield_pct']}% ({rates['date']}) · {t['macro.trend.' + str(rates['trend'])]}"
+        if rates
+        else na
+    )
+    vix_text = (
+        f"{vix['vix']} · {t['macro.risk_off'] if context.risk_off else t['macro.calm']}"
+        if vix
+        else na
+    )
+    lines = [
+        t["section.macro"],
+        t["macro.dxy"].format(value=escape(dxy_text)),
+        t["macro.us10y"].format(value=escape(rates_text)),
+        t["macro.vix"].format(value=escape(vix_text)),
+        f"{dot(context.state, direction)} "
+        + t["macro.verdict"].format(
+            value=t.get(f"macro.state.{context.state}", escape(context.state))
+        ),
+    ]
+    if context.event:
+        when = context.event_at.strftime("%d.%m %H:%M UTC") if context.event_at else na
+        lines.append(t["macro.event"].format(event=escape(context.event), time=when))
+    return lines
 
 
 def _active(
@@ -229,9 +270,17 @@ def _active(
         t["oi"].format(horizon="4H", value=percent(horizons.get("4h"), na)),
         *([f"<i>{oi_meaning}</i>"] if oi_meaning else []),
         "",
-        t["section.context"],
-        f"{dot(context, setup.direction)} "
-        + t["market"].format(value=t.get(f"context.{context}", escape(context))),
+        *(
+            macro_lines(result.context, setup.direction, t)
+            if result.context.kind == "GOLD_MACRO"
+            else [
+                t["section.context"],
+                f"{dot(context, setup.direction)} "
+                + t["market"].format(
+                    value=t.get(f"context.{context}", escape(context))
+                ),
+            ]
+        ),
         "",
         t["section.levels"],
         t["support"].format(value=zone_text(frame.supports, na)),

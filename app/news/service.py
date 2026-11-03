@@ -41,4 +41,4 @@ def build_pipeline(
     runtime.setup_listeners.append(pipeline.index.mark_dirty)
     # BingX notices go through the scanner's own BingX client and rate limiter.
     bingx = runtime.registry.get("BINGX")
-    return pipeline, default_providers(settings, bingx)
+    return pipeline, default_providers(settings, bingx, runtime.calendar)

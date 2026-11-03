@@ -5,9 +5,23 @@ import re
 from app.config import Settings
 from app.scanner.domain import Contract, Ticker
 
+# Binance lists gold as contractType TRADIFI_PERPETUAL (XAUUSDT, verified 2026-11-03).
+EXPLICIT_CONTRACT_TYPES = frozenset({"PERPETUAL", "TRADIFI_PERPETUAL"})
+# BingX TradFi perpetuals: NC + class (CO commodity, FX, SK stock, SI index) + BASE2QUOTE.
+TRADFI_NAME = re.compile(r"NC(?:CO|FX|SK|SI)([A-Z0-9]+?)2([A-Z]{3})USDT")
+DISPLAY_NAMES = {"NCCOGOLD2USDUSDT": "GOLD (XAU/USD)", "XAUUSDT": "GOLD (XAU/USD)"}
+
 
 def symbols(raw: str) -> set[str]:
     return {s.strip().upper() for s in raw.split(",") if s.strip()}
+
+
+def display_symbol(symbol: str) -> str:
+    """Human name for messages: NCCOGOLD2USDUSDT -> GOLD (XAU/USD); crypto unchanged."""
+    if symbol in DISPLAY_NAMES:
+        return DISPLAY_NAMES[symbol]
+    match = TRADFI_NAME.fullmatch(symbol)
+    return f"{match.group(1)}/{match.group(2)}" if match else symbol
 
 
 def filter_universe(
@@ -21,15 +35,22 @@ def filter_universe(
     bases = {contract.base_asset for contract in contracts}
     for contract in contracts:
         symbol = contract.symbol
+        # Naming a TradFi perpetual (e.g. BingX gold NCCOGOLD2USDUSDT, Binance XAUUSDT)
+        # in the whitelist is the explicit opt-in; without it only crypto is scanned.
+        explicit = symbol in whitelist
         if (
             contract.quote_asset != "USDT"
-            or contract.contract_type != "PERPETUAL"
+            or contract.contract_type
+            not in (EXPLICIT_CONTRACT_TYPES if explicit else {"PERPETUAL"})
             or contract.status != "TRADING"
         ):
             continue
-        if contract.underlying_type != "COIN" or any(
-            s.upper() in {"STOCK", "COMMODITY", "TRADFI", "INDEX"}
-            for s in contract.underlying_subtypes
+        if not explicit and (
+            contract.underlying_type != "COIN"
+            or any(
+                s.upper() in {"STOCK", "COMMODITY", "TRADFI", "INDEX"}
+                for s in contract.underlying_subtypes
+            )
         ):
             continue
         if symbol in blacklist or (whitelist and symbol not in whitelist):

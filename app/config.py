@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     telegram_language: Literal["ru"] = "ru"
 
     scheduler_enabled: bool = True
+    # Spot-portfolio jobs (5-minute monitor + morning digest). Off in single-market
+    # mode (e.g. gold only) so no crypto holdings alerts arrive; the portfolio data
+    # and the on-demand Telegram commands stay untouched.
+    portfolio_monitoring_enabled: bool = True
     monitoring_interval_minutes: int = 5
     morning_digest_hour: int = 8
     morning_digest_minute: int = 0
@@ -122,7 +126,14 @@ class Settings(BaseSettings):
     scanner_max_markets: int = Field(default=100, ge=1, le=1000)
     scanner_min_quote_volume_usd: Decimal = Field(default=Decimal("10000000"), ge=0)
     scanner_blacklist: str = ""
+    # When set, the scanner, OI collector, fast watcher and urgent news alerts use
+    # ONLY these symbols. A TradFi perpetual is scanned only when named here, e.g.
+    # gold-only mode: CPDA_SCANNER_WHITELIST=NCCOGOLD2USDUSDT (BingX GOLD(XAU)-USDT).
     scanner_whitelist: str = ""
+    # TradFi perpetuals trade 24/7 on the exchange while the real market is closed;
+    # skip them outside CME metals hours (Sun 18:00 - Fri 17:00 New York, daily
+    # 17:00-18:00 break). Crypto is never gated. See app/scanner/market_hours.py.
+    scanner_market_hours_gate: bool = True
     scanner_exclude_leveraged: bool = True
     scanner_concurrency: int = Field(default=5, ge=1, le=20)
     scanner_requests_per_second: float = Field(default=4.0, gt=0, le=10)
@@ -176,6 +187,10 @@ class Settings(BaseSettings):
     fast_min_pct_1m: float = Field(default=1.0, gt=0)
     fast_min_pct_3m: float = Field(default=1.8, gt=0)
     fast_min_pct_5m: float = Field(default=2.5, gt=0)
+    # Multiplies EVERY absolute fast-move floor (FAST and EXTREME, 15s..5m). The
+    # defaults are crypto-sized; gold moves ~10x less (BingX gold 1m |move| p99.9 was
+    # 0.22% on 2026-11-03), so gold-only mode uses 0.25 -> 1m floor 0.25%.
+    fast_floor_scale: float = Field(default=1.0, gt=0, le=1)
     fast_volume_expansion: float = Field(default=3.0, gt=1)
     fast_cooldown_minutes: int = Field(default=30, ge=1)
     fast_queue_size: int = Field(default=200, ge=10)
@@ -254,6 +269,52 @@ class Settings(BaseSettings):
     calibration_min_samples: int = Field(default=30, ge=1)
     tradingview_webhook_enabled: bool = False
     tradingview_webhook_secret: str | None = None
+    # Forward TradingView SIGNAL webhooks (QS PRO Gold alert() JSON) to the scanner
+    # Telegram chat, with the bot's own view of the same market for a cross-check.
+    tradingview_forward_telegram: bool = True
+
+    # Gold macro context (DXY, US 10Y yield, VIX). Applies only to gold symbols and is
+    # fetched only when one is in the universe. Rules mirror QS PRO Gold (Pine):
+    # LONG headwind = DXY 4h above a rising EMA50 AND 10Y above its 20-day EMA.
+    macro_enabled: bool = True
+    macro_veto: bool = True  # headwind -> readiness WAIT_MACRO (never READY)
+    macro_dxy_symbol: str = "NCSIDXY2USDUSDT"  # BingX US Dollar Index perpetual
+    macro_dxy_ema: int = Field(default=50, ge=5, le=200)
+    macro_yield_ema_days: int = Field(default=20, ge=5, le=60)
+    macro_vix_spike: float = Field(default=1.2, gt=1, le=3)  # vs 20-day average
+    macro_vix_panic: float = Field(default=30.0, gt=0)
+    macro_block_short_risk_off: bool = True
+    macro_cache_seconds: int = Field(default=900, ge=60, le=86400)
+
+    # Economic calendar (high-impact USD events). Blackout = no READY setups from
+    # `pre` minutes before to `post` minutes after an event; reminder `lead` minutes
+    # before. Source: ForexFactory weekly JSON (free, current week only) plus extras
+    # in the form "2026-12-09T14:00-05:00 FOMC statement|2026-12-09T14:30-05:00 ...".
+    calendar_enabled: bool = True
+    calendar_url: str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    calendar_currencies: str = "USD"
+    calendar_min_impact: Literal["High", "Medium"] = "High"
+    calendar_extra_events: str = ""
+    calendar_refresh_minutes: int = Field(default=60, ge=15, le=1440)
+    calendar_pre_minutes: int = Field(default=30, ge=0, le=240)
+    calendar_post_minutes: int = Field(default=90, ge=0, le=600)
+    calendar_reminder_minutes: int = Field(default=30, ge=1, le=240)
+    calendar_send_telegram: bool = True
+
+    # Gold-relevant official news feeds (Fed, BEA, ECB, White House). Their items are
+    # tagged with these symbols, so they reach gold setups and urgent gold alerts.
+    news_macro_enabled: bool = False  # on in gold-only mode (.env)
+    news_macro_symbols: str = "NCCOGOLD2USDUSDT"
+    # Around a calendar event the Fed feed is polled this often instead of the RSS
+    # interval (FOMC statements appear on federalreserve.gov first).
+    news_event_poll_seconds: float = Field(default=10, ge=5, le=120)
+    # Optional push source: public Telegram channels read through YOUR Telegram
+    # account (MTProto user API, `pip install telethon`). api_id/api_hash come from
+    # https://my.telegram.org; log in once with `python -m scripts.telegram_news_login`.
+    news_telegram_api_id: int | None = None
+    news_telegram_api_hash: str | None = None
+    news_telegram_channels: str = ""  # comma-separated @usernames, e.g. "@chan1,@chan2"
+    news_telegram_session: str = "telegram_news"  # session file stem in project root
 
     @model_validator(mode="after")
     def anchor_sqlite_path(self) -> Settings:

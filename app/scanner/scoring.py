@@ -143,7 +143,14 @@ def score_setup(
         blocks["derivatives"] = (6 if constructive else 0) + (
             4 if derivatives.funding_state != "unavailable" and not crowded else 0
         )
-    if settings.scanner_use_btc_context and symbol not in ("BTCUSDT", "ETHUSDT"):
+    macro = context.kind == "GOLD_MACRO"
+    if macro:
+        # Gold: DXY/US10Y backdrop (state = direction it favours); BTC never applies.
+        if context.state != "unavailable":
+            blocks["market_context"] = (
+                5 if context.state == trend else 2 if context.state == "MIXED" else 0
+            )
+    elif settings.scanner_use_btc_context and symbol not in ("BTCUSDT", "ETHUSDT"):
         blocks["market_context"] = (
             5 if context.state == trend else 2 if context.state == "MIXED" else 0
         )
@@ -156,6 +163,17 @@ def score_setup(
             blocks["regime"] = min(blocks["regime"], 5)
     risk = risk_plan(direction, frames, settings)
     blocks["risk_room"] = 10 if risk.valid else 0
+    headwind = (
+        macro
+        and settings.macro_veto
+        and context.state == ("BEARISH" if direction == Direction.LONG else "BULLISH")
+    )
+    fear = (
+        macro
+        and direction == Direction.SHORT
+        and context.risk_off
+        and settings.macro_block_short_risk_off
+    )
     if not location:
         readiness, message = (
             Readiness.WAIT_LOCATION,
@@ -180,6 +198,18 @@ def score_setup(
         readiness, message = (
             Readiness.WAIT_RISK,
             "Wait for acceptable structural risk and room: " + risk.reason,
+        )
+    elif headwind or fear:
+        readiness, message = (
+            Readiness.WAIT_MACRO,
+            "Wait: VIX risk-off, no gold SHORT"
+            if fear
+            else "Wait: macro headwind (DXY and US10Y against the trade)",
+        )
+    elif context.event:
+        readiness, message = (
+            Readiness.WAIT_EVENT,
+            f"Wait: high-impact event blackout ({context.event})",
         )
     else:
         readiness, message = (

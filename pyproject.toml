@@ -29,6 +29,10 @@ dev = [
     "pytest-cov>=6.0.0,<7.0.0",
     "respx>=0.22.0,<1.0.0",
 ]
+# Optional push news source: Telegram headline channels via your own account.
+telegram-news = [
+    "telethon>=1.36,<2",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

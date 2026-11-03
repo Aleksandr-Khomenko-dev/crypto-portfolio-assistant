@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -18,6 +18,19 @@ def _build_connect_args(database_url: str) -> dict[str, object]:
     return {}
 
 
+def _sqlite_wal(dbapi_connection, _record) -> None:
+    """WAL lets the news, fast-watcher and scanner writers work while the scanner runs
+    a long read; in the default rollback journal one minute-long read (first-cycle
+    history seeding on a large database) made concurrent writes fail with
+    "database is locked" after the 30 s timeout. The setting is persistent per file;
+    in-memory databases keep their own mode."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
+
+
 def _build_engine(database_url: str) -> Engine:
     engine = _ENGINE_CACHE.get(database_url)
     if engine is None:
@@ -27,6 +40,8 @@ def _build_engine(database_url: str) -> Engine:
             future=True,
             connect_args=_build_connect_args(database_url),
         )
+        if database_url.startswith("sqlite"):
+            event.listen(engine, "connect", _sqlite_wal)
         _ENGINE_CACHE[database_url] = engine
     return engine
 

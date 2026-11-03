@@ -476,3 +476,43 @@ python -m app.telegram.scanner_smoke_test   # injected READY test alert via the 
 ```
 
 See [implementation and verification notes](docs/scanner-implementation.md) for the file inventory, audit findings and check results.
+
+## Gold-only mode
+
+The scanner can run on a single TradFi market: BingX `GOLD(XAU)-USDT` (internal symbol `NCCOGOLD2USDUSDT`, ~$1B daily quote volume, verified 2026-11-03). TradFi perpetuals are excluded by default and are admitted only when named in the whitelist.
+
+```dotenv
+CPDA_SCANNER_WHITELIST=NCCOGOLD2USDUSDT   # scanner, OI collector, fast watcher, urgent news
+CPDA_SCANNER_USE_BTC_CONTEXT=false        # BTC risk-off must not cap gold LONGs
+CPDA_SCANNER_MARKET_HOURS_GATE=true       # no setups/fast alerts while the gold market is closed
+CPDA_FAST_FLOOR_SCALE=0.25                # gold-sized fast-move floors (1m 0.25%, 5m 0.625%)
+CPDA_PORTFOLIO_MONITORING_ENABLED=false   # no crypto-portfolio monitor/digest jobs
+```
+
+- **Market hours.** BingX quotes gold 24/7, but the real market (CME metals) is closed Friday 17:00 – Sunday 18:00 New York time and pauses daily 17:00–18:00. Weekend BingX candles carry about 1/6 of weekday volume and 1/5 of the range, so gold is skipped in those windows. Holidays are not modelled.
+- **Fast watcher.** Default floors are crypto-sized (1m 1%). The BingX gold 1m move's 99.9th percentile was 0.22% (2026-11-03), so the floor scale 0.25 makes FAST/EXTREME alerts fire only on real shocks.
+- Messages show `GOLD (XAU/USD)`; the TradingView button opens `OANDA:XAUUSD`.
+
+### Gold context layers
+
+| Layer | Source (free, verified 2026-11-03) | Effect |
+|---|---|---|
+| Macro | DXY: BingX `NCSIDXY2USD-USDT` 4h · US 10Y: U.S. Treasury daily par-yield XML · VIX: Cboe delayed quote + daily history | `market_context` block (5 pts). DXY above a rising EMA50 **and** 10Y above its 20-day EMA = headwind for LONG (mirror for SHORT) → readiness `WAIT_MACRO`. VIX ≥ 30 or ≥ 1.2× its 20-day average blocks gold SHORTs. |
+| Calendar | ForexFactory weekly JSON (USD, High impact; current week only) + `CPDA_CALENDAR_EXTRA_EVENTS` | No `READY` from 30 min before to 90 min after an event (`WAIT_EVENT`); Telegram reminder 30 min before, with forecast/previous. |
+| News | Fed (monetary policy, speeches, testimony), BEA, ECB, White House RSS; optional Telegram headline channels via your own account | Items are tagged with gold and classified by macro rules (FOMC, CPI/PCE/NFP, war, tariffs…). Critical items send urgent alerts; a headline channel gives `URGENT_PRELIMINARY`, an official feed confirms it. The Fed feed is polled every 10 s within 10 min of a calendar event. |
+| TradingView | QS PRO Gold v2.3 `alert()` JSON → `POST /api/webhooks/tradingview` (`event: "SIGNAL"`) | Stored, then forwarded to Telegram with the bot's own latest analysis, the macro verdict, the next event and an agreement line. Never used in scoring. |
+
+Daily Treasury yields lag by one day; the Cboe quote is ~15 minutes late; ForexFactory is unofficial and covers one week. Missing inputs are reported in the context (`assets.errors`), never guessed. Holidays are not modelled.
+
+### Running gold mode
+
+`python -m app.scanner.runner` is the 24/7 process: scanner, OI collector, news, fast watcher and calendar reminders. The API serves the TradingView webhook, the dashboard and bot commands; with `CPDA_SCHEDULER_ENABLED=false` it does not scan as well (do not run both scanners on one database).
+
+```bash
+python -m app.scanner.runner                                   # terminal 1
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1  # terminal 2 (bot polling included)
+```
+
+TradingView can only reach a public HTTPS URL, e.g. a tunnel to port 8000; the alert uses "Any alert() function call", the webhook URL `https://<host>/api/webhooks/tradingview`, and the script inputs "Send alert() as JSON" + "Bot webhook secret" (= `CPDA_TRADINGVIEW_WEBHOOK_SECRET`).
+
+Telegram headline channels: set `CPDA_NEWS_TELEGRAM_API_ID`, `CPDA_NEWS_TELEGRAM_API_HASH` (https://my.telegram.org) and `CPDA_NEWS_TELEGRAM_CHANNELS`, then `pip install -e '.[telegram-news]'` and `python -m scripts.telegram_news_login`. The `*.session` file is a login credential (git-ignored).

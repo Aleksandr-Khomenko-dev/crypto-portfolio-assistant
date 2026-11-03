@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from html import unescape
@@ -111,14 +111,29 @@ class RssProvider(PollingProvider):
         user_agent: str,
         interval: float,
         client: httpx.AsyncClient | None = None,
+        symbols: list[str] | None = None,
+        burst: Callable[[], bool] | None = None,
+        burst_interval: float | None = None,
     ) -> None:
         self.name = name
         super().__init__(interval)
         self.url, self.source = url, source
         self.client = client or httpx.AsyncClient(timeout=20, follow_redirects=True)
-        self.headers = {"User-Agent": user_agent, "Accept": "application/rss+xml"}
+        # BEA answers 406 to a bare "application/rss+xml"; fall back to any XML.
+        self.headers = {
+            "User-Agent": user_agent,
+            "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+        }
         self.etag: str | None = None
         self.modified: str | None = None
+        # Macro feeds tag every item with the markets they move (e.g. gold).
+        self.symbols = list(symbols or [])
+        self.burst, self.burst_interval = burst, burst_interval
+
+    def current_interval(self) -> float:
+        if self.burst is not None and self.burst_interval and self.burst():
+            return self.burst_interval
+        return self.interval
 
     async def poll(self) -> list[NormalizedNewsItem]:
         headers = dict(self.headers)
@@ -157,6 +172,7 @@ class RssProvider(PollingProvider):
                     url=link,
                     published_at=parsedate_to_datetime(published).astimezone(UTC),
                     received_at=received_at,
+                    symbols=list(self.symbols),
                     raw_payload_hash=payload_hash(
                         {"guid": guid, "title": title, "published": published}
                     ),
@@ -168,7 +184,75 @@ class RssProvider(PollingProvider):
         await self.client.aclose()
 
 
-def default_providers(settings, bingx) -> list[NewsProvider]:
+# Official gold-relevant feeds (verified live 2026-11-03). U.S. Treasury press
+# releases (404) and BLS (403 for automated clients) have no usable feed.
+MACRO_FEEDS = (
+    (
+        "fed_monetary",
+        "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        "Federal Reserve",
+        True,
+    ),
+    (
+        "fed_speeches",
+        "https://www.federalreserve.gov/feeds/speeches.xml",
+        "Federal Reserve",
+        False,
+    ),
+    (
+        "fed_testimony",
+        "https://www.federalreserve.gov/feeds/testimony.xml",
+        "Federal Reserve",
+        False,
+    ),
+    ("bea_releases", "https://apps.bea.gov/rss/rss.xml", "U.S. BEA", False),
+    ("ecb_press", "https://www.ecb.europa.eu/rss/press.html", "ECB", False),
+    ("whitehouse_news", "https://www.whitehouse.gov/news/feed/", "White House", False),
+)
+EVENT_BURST = timedelta(minutes=10)
+
+
+def event_burst(calendar) -> Callable[[], bool]:
+    """True within 10 minutes of a calendar event (e.g. the FOMC statement)."""
+
+    def active() -> bool:
+        now = datetime.now(UTC)
+        return any(abs(event.at - now) <= EVENT_BURST for event in calendar.events)
+
+    return active
+
+
+def macro_providers(settings, calendar=None) -> list[NewsProvider]:
+    symbols = sorted(
+        {s.strip().upper() for s in settings.news_macro_symbols.split(",") if s.strip()}
+    )
+    agent = (
+        settings.news_sec_user_agent or "CPDA macro news context (read-only RSS reader)"
+    )
+    providers: list[NewsProvider] = []
+    for name, url, source, bursts in MACRO_FEEDS:
+        providers.append(
+            RssProvider(
+                name,
+                url,
+                source,
+                agent,
+                settings.news_poll_rss_seconds,
+                symbols=symbols,
+                burst=event_burst(calendar)
+                if bursts and calendar is not None
+                else None,
+                burst_interval=settings.news_event_poll_seconds,
+            )
+        )
+    if settings.news_telegram_api_id and settings.news_telegram_api_hash:
+        from app.news.providers.telegram_channels import TelegramChannelsProvider
+
+        providers.append(TelegramChannelsProvider(settings, symbols))
+    return providers
+
+
+def default_providers(settings, bingx, calendar=None) -> list[NewsProvider]:
     providers: list[NewsProvider] = []
     if bingx is not None:
         providers.append(BingXAnnouncements(bingx, settings.news_poll_bingx_seconds))
@@ -191,4 +275,6 @@ def default_providers(settings, bingx) -> list[NewsProvider]:
             settings.news_poll_rss_seconds,
         )
     )
+    if settings.news_macro_enabled:
+        providers += macro_providers(settings, calendar)
     return providers

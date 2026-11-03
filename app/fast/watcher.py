@@ -52,6 +52,8 @@ from app.providers.bingx_futures import (
     bingx_to_internal_symbol,
     internal_to_bingx_symbol,
 )
+from app.scanner.market_hours import follows_market_hours, metals_market_open
+from app.scanner.universe import symbols as parse_symbols
 from app.telegram.early import EarlyContext, format_early_event
 from app.telegram.fast import FastContext, format_fast_event, tradingview_url
 from app.telegram.scanner import Mode
@@ -64,14 +66,16 @@ FAST_STATES = {state.value for state in FastState}
 
 def config_from(settings: Settings) -> FastConfig:
     base = FastConfig()
+    scale = settings.fast_floor_scale
+    min_pct = {
+        **base.min_pct,
+        "1m": settings.fast_min_pct_1m,
+        "3m": settings.fast_min_pct_3m,
+        "5m": settings.fast_min_pct_5m,
+    }
     return FastConfig(
-        min_pct={
-            **base.min_pct,
-            "1m": settings.fast_min_pct_1m,
-            "3m": settings.fast_min_pct_3m,
-            "5m": settings.fast_min_pct_5m,
-        },
-        extreme_pct=base.extreme_pct,
+        min_pct={window: pct * scale for window, pct in min_pct.items()},
+        extreme_pct={window: pct * scale for window, pct in base.extreme_pct.items()},
         sigma_k=settings.fast_sigma_k,
         sigma_k_extreme=settings.fast_sigma_k_extreme,
         volume_expansion=settings.fast_volume_expansion,
@@ -154,6 +158,8 @@ class FastMarketWatcher:
         self.counters: Counter[str] = Counter()
         self.exclusions: dict[str, str] = {}
         self.spreads: dict[str, float] = {}
+        # TradFi symbols (e.g. gold) that stay silent while their real market is closed.
+        self.market_hours_symbols: set[str] = set()
         self.latency = {
             key: Samples()
             for key in (
@@ -217,15 +223,21 @@ class FastMarketWatcher:
         priority = portfolio | active
         floor = self.settings.fast_min_quote_volume_usd
         max_spread = self.settings.fast_max_spread_pct
+        whitelist = parse_symbols(self.settings.scanner_whitelist)
         chosen = []
         self.exclusions = {}
+        self.market_hours_symbols = set()
         for contract in contracts:
             symbol = contract.symbol
             reason = None
             ticker = tickers.get(symbol)
             if contract.status != "TRADING":
                 reason = "NOT_TRADING"
-            elif contract.quote_asset != "USDT" or contract.underlying_type != "COIN":
+            elif whitelist and symbol not in whitelist:
+                reason = "NOT_WHITELISTED"
+            elif contract.quote_asset != "USDT" or (
+                contract.underlying_type != "COIN" and symbol not in whitelist
+            ):
                 reason = "NOT_USDT_COIN_PERPETUAL"
             elif ticker is None:
                 reason = "NO_TICKER"
@@ -243,6 +255,8 @@ class FastMarketWatcher:
                 else:
                     if spread is not None:
                         self.spreads[symbol] = spread
+                    if follows_market_hours(contract.underlying_type):
+                        self.market_hours_symbols.add(symbol)
                     rank = (
                         0
                         if symbol in portfolio
@@ -292,6 +306,9 @@ class FastMarketWatcher:
             return
         self.counters["fast_events_received"] += 1
         tracker.on_kline(open_ms, close, volume, received, high, low, open_)
+        if self._market_closed(symbol, received):
+            self.counters["fast_market_closed_skips"] += 1
+            return
         trigger = evaluate(tracker, received, self.config)
         if trigger is not None:
             self._on_fast(symbol, trigger, received)
@@ -305,6 +322,13 @@ class FastMarketWatcher:
                 return
             for event in events:
                 self._enqueue_early(event, received)
+
+    def _market_closed(self, symbol: str, received: float) -> bool:
+        return (
+            self.settings.scanner_market_hours_gate
+            and symbol in self.market_hours_symbols
+            and not metals_market_open(datetime.fromtimestamp(received, UTC))
+        )
 
     def _on_fast(self, symbol: str, trigger: Trigger, received: float) -> None:
         decision = self.antispam.decide(symbol, trigger, received)
@@ -888,7 +912,10 @@ class FastMarketWatcher:
             return 0
         now = datetime.now(UTC)
         chosen = symbols or list(self.trackers)
-        majors = await self.contexts.majors(now)
+        # BTC/ETH bias is crypto context: gold and other TradFi markets never use it,
+        # and with no crypto market tracked the majors are not even downloaded.
+        crypto = [s for s in chosen if s not in self.market_hours_symbols]
+        majors = await self.contexts.majors(now) if crypto else {}
         semaphore = asyncio.Semaphore(self.settings.early_context_concurrency)
         built = 0
         candidates: list[EarlyEvent] = []
@@ -898,7 +925,10 @@ class FastMarketWatcher:
             async with semaphore:
                 try:
                     ctx = await self.contexts.build(
-                        symbol, now, majors, self.spreads.get(symbol)
+                        symbol,
+                        now,
+                        {} if symbol in self.market_hours_symbols else majors,
+                        self.spreads.get(symbol),
                     )
                 except Exception as exc:  # noqa: BLE001 - isolate one market
                     self.counters["provider_errors"] += 1
@@ -921,6 +951,9 @@ class FastMarketWatcher:
 
         await asyncio.gather(*(one(s) for s in chosen))
         for event in self.early.gate_pass(candidates, self.clock()):
+            if self._market_closed(event.symbol, self.clock()):
+                self.counters["fast_market_closed_skips"] += 1
+                continue
             self._enqueue_early(event, None)
         await asyncio.to_thread(self.flush_engine_state)
         self.counters["context_passes"] += 1

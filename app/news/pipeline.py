@@ -39,6 +39,7 @@ from app.news.domain import (
 from app.news.entities import Coverage, NewsEntityResolver, portfolio_pairs
 from app.news.metrics import NewsMetrics
 from app.news.providers.base import NewsProvider
+from app.scanner.universe import symbols as parse_symbols
 from app.telegram.scanner import Mode
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,11 @@ class NewsPipeline:
         if not news.matches or level != ImpactLevel.CRITICAL:
             return
         best = news.matches[0]
+        whitelist = parse_symbols(self.settings.scanner_whitelist)
+        if whitelist and best.symbol not in whitelist:
+            # Single-market mode (e.g. gold only): no urgent alerts about other assets.
+            self.metrics.counters["news_urgent_not_whitelisted"] += 1
+            return
         strong = best.confidence >= self.settings.news_min_link_confidence
         covered = news.coverage.get(best.symbol) != "UNCOVERED" or bool(linked)
         if strong and covered:

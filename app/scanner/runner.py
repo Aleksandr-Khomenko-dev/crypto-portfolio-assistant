@@ -14,10 +14,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
 
 from sqlalchemy import inspect
 
@@ -174,6 +176,21 @@ async def log_fast_status(stop: asyncio.Event, watcher, every: float = 300) -> N
             logger.info("Fast watcher status %s", watcher.snapshot())
 
 
+def calendar_sender(settings: Settings):
+    """Reminders go to the scanner chat; None when Telegram is not configured."""
+    from app.services.telegram_service import TelegramService
+
+    telegram = TelegramService(settings)
+    chat = settings.scanner_telegram_chat_id
+    if not (settings.calendar_send_telegram and telegram.enabled and chat):
+        return None
+
+    async def send(text: str) -> list[int]:
+        return await telegram.send_message(chat, text)
+
+    return send
+
+
 async def main(once: bool) -> None:
     settings = get_settings()
     if not settings.scanner_enabled:
@@ -220,6 +237,23 @@ async def main(once: bool) -> None:
                 "News pipeline started providers=%s (context only; scores unchanged)",
                 [p.name for p in providers],
             )
+    runtime = get_scanner_runtime()
+    if not once and runtime.calendar is not None:
+        from app.macro.reminders import calendar_forever
+
+        background.append(
+            asyncio.create_task(
+                calendar_forever(
+                    stop, runtime.calendar, settings, calendar_sender(settings)
+                )
+            )
+        )
+        logger.info(
+            "Economic calendar enabled reminders=%smin before, pause -%s/+%smin",
+            settings.calendar_reminder_minutes,
+            settings.calendar_pre_minutes,
+            settings.calendar_post_minutes,
+        )
     watcher = None
     if not once and settings.fast_enabled and settings.scanner_provider == "bingx":
         watcher = await maybe_start_fast_watcher(settings)
@@ -260,9 +294,20 @@ def cli() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="run one cycle and exit")
     args = parser.parse_args()
+    # CPDA_LOG_FILE (set by scripts/gold_bot.sh): size-rotated log, 20 MB x 5 files,
+    # instead of one ever-growing file. Without it, logs go to stderr as before.
+    log_file = os.environ.get("CPDA_LOG_FILE")
+    handlers: list[logging.Handler] | None = None
+    if log_file:
+        handlers = [
+            RotatingFileHandler(
+                log_file, maxBytes=20_000_000, backupCount=5, encoding="utf-8"
+            )
+        ]
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=handlers,
     )
     asyncio.run(main(args.once))
 

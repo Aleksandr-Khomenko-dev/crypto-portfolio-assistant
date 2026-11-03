@@ -48,6 +48,12 @@ class EventType(StrEnum):
     GOVERNANCE = "GOVERNANCE"
     PARTNERSHIP = "PARTNERSHIP"
     INTEGRATION = "INTEGRATION"
+    # Macro events that move gold (official Fed/BEA/ECB/White House feeds, headlines).
+    MONETARY_POLICY = "MONETARY_POLICY"
+    MACRO_DATA = "MACRO_DATA"
+    GEOPOLITICS = "GEOPOLITICS"
+    TRADE_POLICY = "TRADE_POLICY"
+    GOLD_MARKET = "GOLD_MARKET"
     OTHER = "OTHER"
 
 

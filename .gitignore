@@ -36,3 +36,7 @@ Thumbs.db
 scripts/load_real_portfolio.py
 scripts/reload_exact_portfolio.py
 alembic.ini.bak
+# Telegram user-API login (credential) and the economic-calendar cache
+*.session
+*.session-journal
+.cache/

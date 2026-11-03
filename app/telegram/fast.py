@@ -7,6 +7,7 @@ from datetime import datetime
 from html import escape
 
 from app.fast.detector import FastState, Trigger
+from app.scanner.universe import display_symbol
 from app.telegram.i18n import catalog
 from app.telegram.scanner import Mode
 
@@ -20,8 +21,16 @@ WINDOW_RU = {
 }
 
 
+# Markets better read on a reference chart than on the exchange perpetual.
+TRADINGVIEW_OVERRIDES = {"NCCOGOLD2USDUSDT": "OANDA:XAUUSD", "XAUUSDT": "OANDA:XAUUSD"}
+
+
 def tradingview_url(symbol: str, exchange: str = "BINGX") -> str:
     """Verified format: BINGX:ARBUSDT.P (TradingView symbol page, 2026-09-24)."""
+    if symbol in TRADINGVIEW_OVERRIDES:
+        return (
+            f"https://www.tradingview.com/chart/?symbol={TRADINGVIEW_OVERRIDES[symbol]}"
+        )
     return f"https://www.tradingview.com/chart/?symbol={exchange}:{symbol}.P"
 
 
@@ -100,7 +109,7 @@ def format_fast_event(
     lines += [
         title(trigger, decision, context.active_setup is not None),
         SEPARATOR,
-        f"🪙 <b>{escape(symbol)}</b> · BingX",
+        f"🪙 <b>{escape(display_symbol(symbol))}</b> · BingX",
         f"{icon} <b>{trigger.change_pct:+.2f}%</b> за {WINDOW_RU[trigger.window]}",
         f"📏 Порог этого актива: {trigger.threshold_pct:.2f}% (адаптивный, по волатильности)",
         "",

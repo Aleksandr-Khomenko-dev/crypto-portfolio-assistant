@@ -20,6 +20,7 @@ from app.news.domain import (
     Verification,
 )
 from app.news.repository import ActiveSetupRef, NewsContext
+from app.scanner.universe import display_symbol
 from app.telegram.i18n import catalog
 from app.telegram.scanner import Mode
 
@@ -67,7 +68,32 @@ SUMMARY = {
     EventType.GOVERNANCE: "Governance-решение или голосование {name}.",
     EventType.PARTNERSHIP: "Партнёрство с участием {name}.",
     EventType.INTEGRATION: "Интеграция с участием {name}.",
+    EventType.MONETARY_POLICY: "Решение или сигнал центробанка — важно для {name}.",
+    EventType.MACRO_DATA: "Вышли макроэкономические данные — важно для {name}.",
+    EventType.GEOPOLITICS: "Геополитическое событие — важно для {name}.",
+    EventType.TRADE_POLICY: "Торговая политика / пошлины — важно для {name}.",
+    EventType.GOLD_MARKET: "Новость о рынке золота: {name}.",
     EventType.OTHER: "Новость, связанная с {name}.",
+}
+MACRO_WHY = {
+    EventType.MONETARY_POLICY: (
+        "Ставка и тон ФРС двигают доходности и доллар — главные драйверы золота. "
+        "Мягче ожиданий обычно поддерживает золото, жёстче — давит. "
+        "Первые минуты — резкие движения в обе стороны."
+    ),
+    EventType.MACRO_DATA: (
+        "Цифры сильнее прогноза обычно укрепляют доллар и давят на золото, слабее — "
+        "наоборот. Спред в первые минуты расширяется."
+    ),
+    EventType.GEOPOLITICS: (
+        "Напряжённость обычно повышает спрос на золото как защитный актив, "
+        "но первая реакция бывает непредсказуемой."
+    ),
+    EventType.TRADE_POLICY: (
+        "Пошлины влияют на доллар, инфляцию и спрос на защитные активы — "
+        "реакция золота может быть резкой."
+    ),
+    EventType.GOLD_MARKET: "Новость напрямую о золоте; проверьте источник и реакцию цены.",
 }
 SEVERE = {
     EventType.EXPLOIT,
@@ -89,6 +115,8 @@ def ago(then: datetime, now: datetime) -> str:
 
 
 def why_it_matters(event: EventType, direction: NewsDirection, linked: bool) -> str:
+    if event in MACRO_WHY:
+        return MACRO_WHY[event]
     if event in SEVERE:
         return (
             "События такого типа могут резко повысить волатильность и риск; "
@@ -108,8 +136,14 @@ def why_it_matters(event: EventType, direction: NewsDirection, linked: bool) -> 
 
 
 def _name(news: ProcessedNews) -> str:
-    symbols = [m.symbol.removesuffix("USDT") for m in news.matches[:3]]
+    symbols = [short(m.symbol) for m in news.matches[:3]]
     return ", ".join(symbols) if symbols else news.item.source
+
+
+def short(symbol: str) -> str:
+    """GOLD (XAU/USD) for TradFi markets, ARB for ARBUSDT."""
+    name = display_symbol(symbol)
+    return name if name != symbol else symbol.removesuffix("USDT")
 
 
 def _prefix(mode: Mode) -> list[str]:
@@ -133,7 +167,7 @@ def _core(news: ProcessedNews, match: EntityMatch | None, now: datetime) -> list
     ]
     if match is not None:
         lines.append(
-            f"🎯 Связь: {escape(match.symbol.removesuffix('USDT'))} · {RELATION[match.match_type]}"
+            f"🎯 Связь: {escape(short(match.symbol))} · {RELATION[match.match_type]}"
         )
     lines += [
         DIRECTION[news.classification.direction],
@@ -170,7 +204,7 @@ def format_setup_followup(
             *_prefix(mode),
             "📰 <b>НОВЫЙ КОНТЕКСТ ДЛЯ АКТИВНОГО СИГНАЛА</b>",
             SEPARATOR,
-            f"🪙 <b>{escape(setup.symbol)}</b> · {direction}",
+            f"🪙 <b>{escape(display_symbol(setup.symbol))}</b> · {direction}",
             f"⭐ Текущий setup: <b>{setup.score} / 100</b> (не меняется из-за новости)",
             "",
             *_core(news, match, now),
@@ -200,7 +234,7 @@ def format_urgent(
     }[kind]
     lines = [*_prefix(mode), title, SEPARATOR]
     if match is not None:
-        lines.append(f"🪙 <b>{escape(match.symbol.removesuffix('USDT'))}</b>")
+        lines.append(f"🪙 <b>{escape(short(match.symbol))}</b>")
     lines += _core(news, match, now)
     if kind == "URGENT_PRELIMINARY":
         lines += [
@@ -210,7 +244,7 @@ def format_urgent(
     if affected:
         lines += ["", "📌 <b>Затронутые setup сканера:</b>"]
         lines += [
-            f"• {s.direction} {escape(s.symbol)} {s.score}/100 (сценарий НЕ отменяется автоматически)"
+            f"• {s.direction} {escape(display_symbol(s.symbol))} {s.score}/100 (сценарий НЕ отменяется автоматически)"
             for s in affected[:5]
         ]
     lines += [

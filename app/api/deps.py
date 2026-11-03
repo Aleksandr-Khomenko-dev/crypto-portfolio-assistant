@@ -48,9 +48,20 @@ def get_scanner_runtime() -> ScannerRuntime:
     global _scanner_runtime
     with _scanner_runtime_guard:
         if _scanner_runtime is None:
+            from app.macro.calendar import EconomicCalendar
+            from app.macro.service import GoldMacroService
+
             settings = get_settings()
+            provider = create_futures_provider(settings)
             _scanner_runtime = ScannerRuntime(
-                create_futures_provider(settings), settings
+                provider,
+                settings,
+                macro=GoldMacroService(settings, provider)
+                if settings.macro_enabled
+                else None,
+                calendar=EconomicCalendar(settings)
+                if settings.calendar_enabled
+                else None,
             )
         return _scanner_runtime
 

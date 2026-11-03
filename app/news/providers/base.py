@@ -80,6 +80,10 @@ class PollingProvider(NewsProvider):
     async def poll(self) -> list[NormalizedNewsItem]:
         raise NotImplementedError
 
+    def current_interval(self) -> float:
+        """Seconds until the next poll; subclasses may poll faster around events."""
+        return self.interval
+
     async def poll_batches(self) -> AsyncIterator[list[NormalizedNewsItem]]:
         """Override to hand each response to the pipeline as soon as it arrives
         (e.g. one request per category) instead of after the whole poll."""
@@ -95,7 +99,7 @@ class PollingProvider(NewsProvider):
                     await self._emit(submit, batch)
                 self.health.success()
                 failures = 0
-                next_at += self.interval
+                next_at += self.current_interval()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - provider outage stays isolated

@@ -19,6 +19,9 @@ from app.analytics.open_interest import (
 )
 from app.config import Settings
 from app.db.scanner_models import ScannerRun
+from app.macro import GOLD_SYMBOLS
+from app.macro.calendar import EconomicCalendar, EconomicEvent
+from app.macro.service import GoldMacroService
 from app.providers.futures import FuturesProvider
 from app.providers.futures_factory import ProviderRegistry
 from app.scanner.domain import (
@@ -33,6 +36,7 @@ from app.scanner.domain import (
     Timeframe,
 )
 from app.scanner.locking import database_scan_lock
+from app.scanner.market_hours import follows_market_hours, metals_market_open
 from app.scanner.notifications import deliver_notifications
 from app.scanner.open_interest_repository import load_history as load_oi_history
 from app.scanner.repository import ScannerRepository
@@ -60,6 +64,27 @@ OI_LOOKBACK = max(HORIZONS.values()) + timedelta(minutes=30)
 TIMEFRAMES: tuple[Timeframe, ...] = ("15m", "1h", "4h")
 
 
+def symbol_context(
+    symbol: str,
+    crypto: MarketContext,
+    gold: MarketContext | None,
+    blackout: list[EconomicEvent],
+) -> MarketContext:
+    """Crypto symbols share the BTC/ETH context; gold gets its macro context (never
+    BTC's) plus the calendar blackout."""
+    if symbol not in GOLD_SYMBOLS:
+        return crypto
+    context = (
+        gold.model_copy(deep=True)
+        if gold is not None
+        else MarketContext(kind="GOLD_MACRO", explanation="Gold macro context disabled")
+    )
+    if blackout:
+        context.event = " + ".join(dict.fromkeys(e.title for e in blackout))[:200]
+        context.event_at = min(e.at for e in blackout)
+    return context
+
+
 class ScannerRuntime:
     """One instance per process shared by API and scheduler, including provider cache and lock."""
 
@@ -68,9 +93,14 @@ class ScannerRuntime:
         provider: FuturesProvider,
         settings: Settings,
         registry: ProviderRegistry | None = None,
+        macro: GoldMacroService | None = None,
+        calendar: EconomicCalendar | None = None,
     ) -> None:
         self.provider = provider  # the scanning exchange for new setups
         self.settings = settings
+        # Gold only: DXY/US10Y/VIX context and the economic-calendar blackout.
+        self.macro = macro
+        self.calendar = calendar
         # Providers for every exchange that still has setups to track.
         self.registry = registry or ProviderRegistry(settings)
         self.registry.register(provider)
@@ -103,6 +133,8 @@ class ScannerRuntime:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.registry.aclose()
+        if self.macro is not None:
+            await self.macro.aclose()
 
 
 class RunNotifier:
@@ -240,6 +272,23 @@ class ScannerService:
             b for b in history[0] if b.close_time <= frames["15m"].candle.close_time
         ]
 
+    async def _gold_inputs(
+        self, universe: list[str], now: datetime, errors: dict[str, str]
+    ) -> tuple[MarketContext | None, list[EconomicEvent]]:
+        """Macro context and calendar blackout, fetched only when gold is scanned."""
+        if not any(symbol in GOLD_SYMBOLS for symbol in universe):
+            return None, []
+        context, blackout = None, []
+        if self.runtime.macro is not None:
+            try:
+                context = await self.runtime.macro.context(now)
+            except Exception as exc:  # noqa: BLE001 - macro is optional context
+                errors["macro"] = type(exc).__name__
+        if self.runtime.calendar is not None:
+            await self.runtime.calendar.refresh(now)
+            blackout = self.runtime.calendar.blackout(now)
+        return context, blackout
+
     async def _run(self, now: datetime, only: str | None = None) -> RunRead:
         started = time.monotonic()
         exchange = self.provider.exchange
@@ -299,6 +348,16 @@ class ScannerService:
                 # One symbol only; the watcher already applied its liquidity filter.
                 tradable = {c.symbol for c in contracts if c.status == "TRADING"}
                 universe = [only] if only in tradable and only in tickers else []
+            if self.settings.scanner_market_hours_gate and not metals_market_open(now):
+                gated = {
+                    c.symbol
+                    for c in contracts
+                    if follows_market_hours(c.underlying_type)
+                }
+                closed = [symbol for symbol in universe if symbol in gated]
+                if closed:
+                    logger.info("Scanner skipped closed-market symbols=%s", closed)
+                universe = [symbol for symbol in universe if symbol not in gated]
             run.universe_size = len(universe)
             logger.info("Scanner universe size=%s", len(universe))
             if not self.runtime.seeded:
@@ -356,6 +415,7 @@ class ScannerService:
                 if self.settings.scanner_use_btc_context
                 else MarketContext(explanation="Context disabled")
             )
+            gold_context, blackout = await self._gold_inputs(universe, now, errors)
             semaphore = asyncio.Semaphore(self.settings.scanner_concurrency)
 
             validation_bars: dict[str, list[Candle]] = {}
@@ -427,7 +487,7 @@ class ScannerService:
                             symbol,
                             frames,
                             derivatives,
-                            context,
+                            symbol_context(symbol, context, gold_context, blackout),
                             tickers[symbol],
                             observed_at,
                             self.settings,

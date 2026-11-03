@@ -30,6 +30,8 @@ class Readiness(StrEnum):
     WAIT_RETEST = "WAIT_RETEST"
     WAIT_VOLUME = "WAIT_VOLUME"
     WAIT_RISK = "WAIT_RISK"
+    WAIT_MACRO = "WAIT_MACRO"  # gold: DXY + yields headwind, or VIX risk-off for SHORT
+    WAIT_EVENT = "WAIT_EVENT"  # high-impact economic event blackout window
     READY = "READY"
 
 
@@ -211,6 +213,13 @@ class MarketContext(BaseModel):
     state: str = "unavailable"
     assets: dict[str, dict[str, str | float]] = Field(default_factory=dict)
     explanation: str = "BTC/ETH data unavailable"
+    # CRYPTO = BTC/ETH context; GOLD_MACRO = DXY/US10Y/VIX, where `state` is the
+    # direction the macro backdrop favours for gold (BULLISH = supports LONG).
+    kind: Literal["CRYPTO", "GOLD_MACRO"] = "CRYPTO"
+    risk_off: bool = False  # GOLD_MACRO: VIX fear spike (no gold shorts)
+    # High-impact economic event whose blackout window covers this analysis.
+    event: str | None = None
+    event_at: datetime | None = None
 
 
 class RiskPlan(BaseModel):

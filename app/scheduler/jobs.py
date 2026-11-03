@@ -59,24 +59,25 @@ async def run_morning_digest_job() -> None:
 def build_scheduler(settings: Settings | None = None) -> AsyncIOScheduler:
     settings = settings or get_settings()
     scheduler = AsyncIOScheduler(timezone=settings.tzinfo)
-    scheduler.add_job(
-        run_monitoring_job,
-        trigger="interval",
-        minutes=settings.monitoring_interval_minutes,
-        kwargs={"run_reason": "scheduled-monitor"},
-        id="portfolio-monitor",
-        replace_existing=True,
-    )
-    scheduler.add_job(
-        run_morning_digest_job,
-        trigger=CronTrigger(
-            hour=settings.morning_digest_hour,
-            minute=settings.morning_digest_minute,
-            timezone=settings.tzinfo,
-        ),
-        id="morning-digest",
-        replace_existing=True,
-    )
+    if settings.portfolio_monitoring_enabled:
+        scheduler.add_job(
+            run_monitoring_job,
+            trigger="interval",
+            minutes=settings.monitoring_interval_minutes,
+            kwargs={"run_reason": "scheduled-monitor"},
+            id="portfolio-monitor",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_morning_digest_job,
+            trigger=CronTrigger(
+                hour=settings.morning_digest_hour,
+                minute=settings.morning_digest_minute,
+                timezone=settings.tzinfo,
+            ),
+            id="morning-digest",
+            replace_existing=True,
+        )
     scheduler.add_job(
         run_cleanup_job,
         trigger=CronTrigger(hour=3, minute=0, timezone=settings.tzinfo),
