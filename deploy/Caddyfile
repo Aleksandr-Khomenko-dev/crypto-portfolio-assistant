@@ -1,0 +1,13 @@
+# Public HTTPS entry point (Let's Encrypt certificates are automatic).
+# ONLY the health check and the TradingView webhooks are routed to the internet;
+# the internal API (portfolio, dashboard, admin, scanner) is never reachable here.
+# No access log: webhook URLs carry a secret token in the path.
+{$DOMAIN} {
+	@public path /health /webhook/tv/* /api/webhooks/tradingview
+	handle @public {
+		reverse_proxy public:8001
+	}
+	handle {
+		respond 404
+	}
+}

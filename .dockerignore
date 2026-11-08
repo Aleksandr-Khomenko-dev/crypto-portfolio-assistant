@@ -1,0 +1,34 @@
+# Never bake secrets, databases, logs or personal data into the image.
+.env
+.env.*
+*.db
+*.db-*
+*.db.backup-*
+*.sqlite3
+*.scanner.lock
+*.session
+*.session-journal
+data/
+backups/
+logs/
+*.log
+.cache/
+scripts/load_real_portfolio.py
+scripts/reload_exact_portfolio.py
+
+# Development artefacts
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.idea/
+.vscode/
+.DS_Store

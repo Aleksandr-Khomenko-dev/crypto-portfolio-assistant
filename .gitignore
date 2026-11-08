@@ -24,6 +24,8 @@ htmlcov/
 *.sqlite3
 *.scanner.lock
 backups/
+# Docker volume (SQLite database on the server)
+data/
 # Logs
 logs/
 *.log

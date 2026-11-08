@@ -142,38 +142,21 @@ Separation rules:
 
 ## Local Setup
 
-### Option A: Docker Compose
+### Option A: Docker Compose (VPS, 24/7)
 
-1. Copy env template:
-
-```bash
-cp .env.example .env
-```
-
-2. Edit `.env` if needed:
-
-- `CPDA_COINGECKO_DEMO_API_KEY` can stay blank
-- `CPDA_TELEGRAM_BOT_TOKEN` can stay blank if Telegram is not needed yet
-
-3. Start the stack:
+The production stack (`docker-compose.yml`) runs the scanner `runner`, the internal
+`api` (bound to the server's localhost only), the `public` webhook app and Caddy
+(HTTPS on 443). Only `/health` and the TradingView webhooks are reachable from the
+internet. Step-by-step guide in Russian: [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ```bash
-docker compose up --build postgres api
+cp .env.example .env      # then set DOMAIN=your.domain and your CPDA_* values
+docker compose up -d --build
 ```
 
-If you also want the Telegram bot:
-
-```bash
-docker compose up --build
-```
-
-4. Open API docs:
-
-`http://localhost:8000/docs`
-
-Dashboard:
-
-`http://localhost:8000/`
+Do not run this stack on the Mac while the LaunchAgents (`scripts/gold_bot.sh`) run:
+two copies would poll the same bot token. For a temporary public HTTPS address from
+the Mac (testing TradingView webhooks): `brew install cloudflared && scripts/tunnel.sh`.
 
 ### Option B: Local Python
 
@@ -381,7 +364,7 @@ pytest
 pytest tests/test_scanner_analytics.py tests/test_scanner_scoring.py tests/test_scanner_provider.py tests/test_scanner_service.py tests/test_scanner_migrations.py
 ```
 
-The test commands use deterministic fixtures and mocked HTTP; they do not call Binance or send Telegram messages. For a fresh Docker install, existing `docker compose up --build postgres api` applies migrations automatically.
+The test commands use deterministic fixtures and mocked HTTP; they do not call Binance or send Telegram messages. In Docker, the one-shot `migrate` service applies migrations before the other services start.
 
 Run **one scheduler/API worker**: cache and overlap protection are process-local. The standalone bot reads the same database. Initial downloads can take several minutes; subsequent cycles reuse closed candles and request only missing history. Provider calls use bounded concurrency, pacing and retry/backoff; each failed market is isolated. CPU analytics run in worker threads. Existing portfolio jobs remain separate.
 

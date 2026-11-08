@@ -1,74 +1,104 @@
-# Локально/VPS: docker compose up -d  →  API + PostgreSQL (алерты из scheduler в API).
-# Отдельный polling-бот: docker compose --profile telegram-bot up -d
-# На проде задай пароль: export POSTGRES_PASSWORD=...
+# Production stack for an always-on VPS. Step-by-step guide: deploy/DEPLOY.md
+#
+#   docker compose up -d --build
+#
+# Do NOT start this on the Mac while the LaunchAgents (scripts/gold_bot.sh) run:
+# two copies would poll the same Telegram bot token and double every alert.
+#
+# Only Caddy is published to the internet (80/443), and it routes ONLY /health and
+# the TradingView webhooks. The internal API (portfolio, dashboard) is bound to the
+# server's localhost; reach it over SSH:  ssh -L 8000:127.0.0.1:8000 user@server
+
+name: trendanalyst
+
+x-bot: &bot
+  build: .
+  image: trendanalyst-bot:latest
+  env_file: .env
+  environment: &env
+    # Overrides any CPDA_DATABASE_URL in .env so the data lives on the volume.
+    # PostgreSQL (profile below) is opt-in, after its data migration is done:
+    #   DOCKER_DATABASE_URL=postgresql+psycopg://trendanalyst:<password>@postgres:5432/trendanalyst
+    CPDA_DATABASE_URL: ${DOCKER_DATABASE_URL:-sqlite:////data/dev.db}
+  volumes:
+    - ./data:/data
+    - ./logs:/app/logs
+  restart: unless-stopped
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: portfolio-signal-agent-postgres
+  migrate: # backs up SQLite, applies Alembic migrations, then exits
+    <<: *bot
+    command: ["python", "-m", "scripts.upgrade_database"]
+    restart: "no"
+
+  runner: # scanner, fast watcher, OI collector, news, calendar; sends Telegram alerts
+    <<: *bot
+    command: ["python", "-m", "app.scanner.runner"]
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-portfolio_db}
-      POSTGRES_USER: ${POSTGRES_USER:-portfolio_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portfolio_pass}
+      <<: *env
+      CPDA_LOG_FILE: /app/logs/runner.log
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api: # INTERNAL: dashboard, REST API, Telegram commands (polling). Never public.
+    <<: *bot
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  public: # internet-facing via Caddy: ONLY /health and the TradingView webhooks
+    <<: *bot
+    command:
+      - uvicorn
+      - app.public:app
+      - --host=0.0.0.0
+      - --port=8001
+      - --workers=1
+      - --no-access-log # webhook URLs carry a secret token
+      - --proxy-headers # real client IP from Caddy's X-Forwarded-For
+      - --forwarded-allow-ips=*  # not published: only Caddy can reach this port
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  caddy: # HTTPS on 443 with automatic Let's Encrypt certificates
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN=your.domain in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - public
+    restart: unless-stopped
+
+  postgres: # optional: docker compose --profile postgres up -d
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trendanalyst
+      POSTGRES_USER: trendanalyst
+      # No default on purpose: the container refuses to start without a password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-portfolio_user} -d ${POSTGRES_DB:-portfolio_db}",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U trendanalyst -d trendanalyst"]
       interval: 10s
       timeout: 5s
       retries: 10
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: portfolio-signal-agent-api
-    env_file:
-      - .env
-    environment:
-      CPDA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-portfolio_user}:${POSTGRES_PASSWORD:-portfolio_pass}@postgres:5432/${POSTGRES_DB:-portfolio_db}
-      CPDA_MARKET_PROVIDER_ORDER: ${CPDA_MARKET_PROVIDER_ORDER:-coingecko,binance}
-      CPDA_SCHEDULER_ENABLED: "true"
-      CPDA_TELEGRAM_POLLING_ENABLED: "false"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: >
-      sh -c "alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./:/app
-
-  bot:
-    profiles:
-      - telegram-bot
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: portfolio-signal-agent-bot
-    env_file:
-      - .env
-    environment:
-      CPDA_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-portfolio_user}:${POSTGRES_PASSWORD:-portfolio_pass}@postgres:5432/${POSTGRES_DB:-portfolio_db}
-      CPDA_MARKET_PROVIDER_ORDER: ${CPDA_MARKET_PROVIDER_ORDER:-coingecko,binance}
-      CPDA_SCHEDULER_ENABLED: "false"
-      CPDA_TELEGRAM_POLLING_ENABLED: "true"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: >
-      sh -c "alembic upgrade head &&
-      python -m app.telegram.bot"
-    volumes:
-      - ./:/app
+    restart: unless-stopped
 
 volumes:
+  caddy_data:
+  caddy_config:
   postgres_data:

@@ -1,22 +1,31 @@
-FROM python:3.12-slim
+# One image for every role (runner, internal API, public webhook app, migrations);
+# docker-compose.yml picks the command. Secrets come from .env at runtime only.
+FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
+# Editable install: the code stays in /app, so PROJECT_ROOT-relative paths
+# (config/, app/static/, .cache/) resolve exactly as on the Mac.
 COPY pyproject.toml README.md ./
 COPY app ./app
-COPY alembic ./alembic
+RUN pip install -e ".[telegram-news]"
+
 COPY alembic.ini ./
+COPY alembic ./alembic
+COPY scripts ./scripts
+COPY config ./config
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+RUN useradd --create-home --uid 10001 bot \
+    && mkdir -p /data /app/logs /app/.cache \
+    && chown -R bot:bot /data /app/logs /app/.cache
+USER bot
 
-EXPOSE 8000
+# SQLite lives on the /data volume (overridden in docker-compose.yml).
+ENV CPDA_DATABASE_URL=sqlite:////data/dev.db
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "app.scanner.runner"]
