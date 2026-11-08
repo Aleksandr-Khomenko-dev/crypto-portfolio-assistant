@@ -1,4 +1,4 @@
-"""Internet-facing app: ONLY a minimal health check and the TradingView webhook(s).
+"""Internet-facing app: ONLY a minimal health check and the TradingView webhooks.
 
 Run it next to (not instead of) the internal API:
 
@@ -33,7 +33,11 @@ def create_public_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}  # no configuration details on the public side
 
-    # Legacy QS PRO Gold format (secret in the body), same path as the internal API.
+    from app.tv.webhook import router as ict_router
+
+    # ICT v4.2 (token in the path): stored raw and answered at once; the runner's
+    # worker does the rest. Legacy QS PRO Gold (secret in the body) keeps its path.
+    app.include_router(ict_router)
     app.include_router(tradingview_router, prefix=settings.api_prefix)
     return app
 

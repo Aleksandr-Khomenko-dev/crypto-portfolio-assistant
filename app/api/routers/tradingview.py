@@ -111,24 +111,16 @@ async def send_forward(settings: Settings, text: str) -> None:
         logger.warning("TradingView forward failed error=%s", type(exc).__name__)
 
 
-@router.post("/webhooks/tradingview", response_model=WebhookRead)
-def tradingview(
-    payload: TradingViewPayload,
-    db: Database,
-    settings: Configuration,
-    background: BackgroundTasks,
-) -> WebhookRead:
-    if not settings.tradingview_webhook_enabled:
-        raise HTTPException(404, "Webhook disabled")
-    if not secrets.compare_digest(
-        payload.secret.get_secret_value(), settings.tradingview_webhook_secret or ""
-    ):
-        raise HTTPException(401, "Invalid webhook secret")
-    now = datetime.now(UTC)
+def handle_legacy(
+    db: Session, payload: TradingViewPayload, settings: Settings, now: datetime
+) -> tuple[WebhookRead, str | None]:
+    """Store one legacy QS PRO Gold event (secret already verified by the caller).
+    Returns the reply and the Telegram text to forward (SIGNAL only), if any.
+    Raises HTTPException(422) for a stale timestamp, as the route always did."""
     if abs((now - payload.timestamp).total_seconds()) > 300:
         raise HTTPException(422, "Event timestamp must be within five minutes")
     if db.get(TradingViewEvent, payload.event_id):
-        return WebhookRead(accepted=True, duplicate=True)
+        return WebhookRead(accepted=True, duplicate=True), None
     db.add(
         TradingViewEvent(
             id=payload.event_id,
@@ -143,6 +135,25 @@ def tradingview(
         and bool(settings.telegram_bot_token)
         and bool(settings.scanner_telegram_chat_id)
     )
-    if forward:
-        background.add_task(send_forward, settings, forward_text(db, payload, settings))
-    return WebhookRead(accepted=True, duplicate=False, forwarded=forward)
+    text = forward_text(db, payload, settings) if forward else None
+    return WebhookRead(accepted=True, duplicate=False, forwarded=forward), text
+
+
+@router.post("/webhooks/tradingview", response_model=WebhookRead)
+def tradingview(
+    payload: TradingViewPayload,
+    db: Database,
+    settings: Configuration,
+    background: BackgroundTasks,
+) -> WebhookRead:
+    # Legacy QS PRO Gold format, kept for the transition to ICT v4.2.
+    if not settings.tradingview_webhook_enabled or not settings.legacy_tv_format_enabled:
+        raise HTTPException(404, "Webhook disabled")
+    if not secrets.compare_digest(
+        payload.secret.get_secret_value(), settings.tradingview_webhook_secret or ""
+    ):
+        raise HTTPException(401, "Invalid webhook secret")
+    reply, text = handle_legacy(db, payload, settings, datetime.now(UTC))
+    if text is not None:
+        background.add_task(send_forward, settings, text)
+    return reply

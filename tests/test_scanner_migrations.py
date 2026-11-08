@@ -94,5 +94,5 @@ def test_unversioned_upgrade_requires_validation_and_makes_backup(tmp_path):
     with closing(sqlite3.connect(path)) as connection:
         assert (
             connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-            == "20260924_0010_early_events"
+            == "20261108_0011_tv_trades"
         )

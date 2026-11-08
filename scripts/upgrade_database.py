@@ -42,6 +42,10 @@ SCANNER_TABLES = {
     "market_structure_episodes",
     "pattern_candidates",
     "early_event_outcomes",
+    "raw_webhook",
+    "trade",
+    "trade_event",
+    "delivery",
 }
 
 

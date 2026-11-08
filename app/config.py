@@ -272,6 +272,34 @@ class Settings(BaseSettings):
     # Forward TradingView SIGNAL webhooks (QS PRO Gold alert() JSON) to the scanner
     # Telegram chat, with the bot's own view of the same market for a cross-check.
     tradingview_forward_telegram: bool = True
+    # Legacy "QS PRO Gold" JSON (secret in the body); being replaced by ICT v4.2.
+    legacy_tv_format_enabled: bool = True
+
+    # TradingView "QS PRO ICT v4" (Quant Structure PRO - ICT Edition v4.2) entries.
+    # Public route POST /webhook/tv/{token} (app.public). No token = route disabled.
+    tv_webhook_token: str | None = None
+    # TradingView's published sender IPs (help article 43000529348, checked 2026-11).
+    tv_allowed_ips: str = "52.89.214.238,34.212.75.30,54.218.53.128,52.32.178.7"
+    tv_ip_allowlist_enabled: bool = True
+    tv_allowed_symbols: str = "XAUUSD,ETHUSDT,CRVUSDT"  # empty = every symbol
+    tv_min_score_to_notify: int = Field(default=78, ge=0, le=100)
+    tv_late_warn_minutes: float = Field(default=3, ge=0)  # "сигнал запоздал на N мин"
+    tv_late_drop_minutes: float = Field(default=10, gt=0)  # stored as LATE, not sent
+    tv_news_before_minutes: int = Field(default=30, ge=0, le=240)
+    tv_news_after_minutes: int = Field(default=60, ge=0, le=600)
+    tv_max_body_bytes: int = Field(default=65536, ge=1024, le=1_048_576)
+    tv_worker_poll_seconds: float = Field(default=1.0, gt=0, le=30)
+    # Units per lot (XAUUSD: 1 lot = 100 oz) and display decimals per ticker.
+    tv_contract_sizes: str = "XAUUSD=100"
+    tv_price_decimals: str = "XAUUSD=2"
+
+    # Who receives what. Full entries ("ВХОДИТЬ СЕЙЧАС", size, lots, leverage) go
+    # only to the owner; public subscribers get none until "soft" is built.
+    owner_chat_id: str | None = None  # defaults to scanner_telegram_chat_id
+    public_signals_mode: Literal["off", "soft"] = "off"
+    # The bot's own scanner (setups, fast moves, early warnings) as background only:
+    # false = keep analysing and storing, but send no scanner messages to the chat.
+    scanner_alerts_enabled: bool = True
 
     # Gold macro context (DXY, US 10Y yield, VIX). Applies only to gold symbols and is
     # fetched only when one is in the universe. Rules mirror QS PRO Gold (Pine):
@@ -345,6 +373,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Enabled TradingView webhook requires a secret of at least 24 characters"
             )
+        if self.tv_webhook_token is not None and len(self.tv_webhook_token) < 32:
+            raise ValueError("CPDA_TV_WEBHOOK_TOKEN must be at least 32 characters")
+        if self.tv_late_drop_minutes <= self.tv_late_warn_minutes:
+            raise ValueError("tv_late_drop_minutes must exceed tv_late_warn_minutes")
         if not self.calibration_band_edges:  # The property validates the band list.
             raise ValueError("Calibration bands must not be empty")
         return self
@@ -370,6 +402,10 @@ class Settings(BaseSettings):
     @property
     def tzinfo(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
+
+    @property
+    def owner_chat(self) -> str | None:
+        return self.owner_chat_id or self.scanner_telegram_chat_id
 
     @property
     def is_production(self) -> bool:

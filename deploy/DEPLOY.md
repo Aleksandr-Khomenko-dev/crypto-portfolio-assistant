@@ -99,10 +99,31 @@ apt install -y sqlite3
 sqlite3 data/dev.db ".backup 'data/backup-$(date +%F).db'"     # копия базы на ходу
 ```
 
-## Адреса для TradingView
+## Настройка TradingView (индикатор QS PRO ICT v4)
 
-- Новый формат ICT v4.2: `https://bot.example.com/webhook/tv/<WEBHOOK_TOKEN>` (появится на следующем шаге).
-- Старый формат «QS PRO Gold»: `https://bot.example.com/api/webhooks/tradingview`.
+Нужен платный тариф TradingView (webhook есть только на платных) и **включённая
+двухфакторная авторизация** — без неё TradingView не отправляет webhook.
+
+1. В `.env` на сервере задайте `CPDA_TV_WEBHOOK_TOKEN` — длинный случайный токен:
+   `python3 -c "import secrets; print(secrets.token_urlsafe(36))"`, затем
+   `docker compose up -d` (перезапуск подхватит токен).
+2. На графике актива (например, XAUUSD 5m) в настройках индикатора:
+   «Entry mode» → «Confirmed: enter after a reaction candle»;
+   «Alert message format» → «JSON for a bot (webhook)»;
+   «Also alert waiting zones» — выключено.
+3. Создайте алерт: условие — «QS PRO ICT v4» → «Any alert() function call»;
+   в «Уведомлениях» включите Webhook URL:
+   `https://bot.example.com/webhook/tv/<CPDA_TV_WEBHOOK_TOKEN>`
+4. Один алерт на каждую пару актив + таймфрейм. Актив должен быть в
+   `CPDA_TV_ALLOWED_SYMBOLS`.
+5. На тарифах Essential и Plus алерты истекают через 2 месяца — пересоздавайте.
+6. Проверка: журнал алертов TradingView, колонка статуса webhook; в боте — сообщение
+   о входе. Без TradingView: `docker compose exec public python -m scripts.replay_tv
+   --url http://127.0.0.1:8001 --scenario full` (сообщения помечены TEST).
+
+Старый формат «QS PRO Gold» продолжает приниматься по адресу
+`https://bot.example.com/api/webhooks/tradingview` (и по новому адресу тоже),
+пока `CPDA_LEGACY_TV_FORMAT_ENABLED=true`.
 
 ## PostgreSQL
 

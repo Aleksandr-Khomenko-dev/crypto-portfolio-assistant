@@ -447,6 +447,10 @@ Related events at one level (e.g. triangle + compression + approach, or a patter
 
 Nothing runs while the host sleeps: on macOS idle sleep the realtime WebSocket, the scanner, the OI collector and news processing all pause, and resume on wake (stale contexts are ignored, open episodes are restored, missed OI boundaries are not backfilled). For true 24/7 operation deploy the runner on an always-on host. Keep the host clock NTP-synced; OI validation tolerates only `CPDA_OI_CLOCK_SKEW_TOLERANCE_SECONDS` (2 s) of exchange-ahead skew.
 
+### TradingView QS PRO ICT v4 entries (ICT Edition v4.2)
+
+Signals are found **only** by the indicator; the bot never recomputes ICT logic. `POST /webhook/tv/{token}` (public app) checks the token (wrong → 404) and TradingView's sender IPs (other → 403), stores the raw request in `raw_webhook` and answers 200 at once (TradingView cancels after 3 s). The runner's worker then parses it (unknown fields ignored), applies the filters (allowed symbols, `score ≥ CPDA_TV_MIN_SCORE_TO_NOTIFY`, freshness from `barTime + tf`: >3 min warns, >10 min is stored as LATE), stores the plan in `trade` / `trade_event` (unique `planId` + `event`: a repeat never sends twice) and sends the confirmed `ENTRY` to the owner only (`CPDA_OWNER_CHAT_ID`), with the economic calendar, DXY / 10Y / VIX and one line from the bot's own scanner. `ZONE_WAIT` and `CANCELLED` are stored, never sent; follow-ups (TP1, STOP, …) are stored and summed in R (threaded replies come next). The legacy QS PRO Gold format is still accepted while `CPDA_LEGACY_TV_FORMAT_ENABLED=true`. Test without TradingView: `python -m scripts.replay_tv --scenario full` (messages are labelled TEST). Setup steps for TradingView: [deploy/DEPLOY.md](deploy/DEPLOY.md).
+
 ### Scanner Telegram alerts
 
 Required: `CPDA_TELEGRAM_BOT_TOKEN` (bot token, keep it in `.env` only) and `CPDA_SCANNER_TELEGRAM_CHAT_ID` (recipient chat). `CPDA_SCANNER_SEND_TELEGRAM=false` suppresses scanner pushes; with `CPDA_SCANNER_DRY_RUN=true` pushes still go out but are prefixed "🧪 DRY RUN". Portfolio alerts use each portfolio's own chat id and are unaffected.

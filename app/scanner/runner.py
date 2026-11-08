@@ -191,6 +191,28 @@ def calendar_sender(settings: Settings):
     return send
 
 
+async def tradingview_forever(stop: asyncio.Event, settings: Settings) -> None:
+    """Processes stored TradingView webhooks; isolated from the scan loop."""
+    from app.services.telegram_service import TelegramService
+    from app.tv.worker import TradingViewWorker
+
+    telegram = TelegramService(settings)
+
+    async def send(chat_id, text, reply_to=None, buttons=None) -> list[int]:
+        return await telegram.send_message(chat_id, text, reply_to, buttons)
+
+    worker = TradingViewWorker(
+        settings,
+        get_session_factory(),
+        send if telegram.enabled else None,
+        calendar=get_scanner_runtime().calendar,
+    )
+    try:
+        await worker.run(stop)
+    except Exception as exc:  # noqa: BLE001 - never takes the runner down
+        logger.error("TradingView worker stopped error=%s", type(exc).__name__)
+
+
 async def main(once: bool) -> None:
     settings = get_settings()
     if not settings.scanner_enabled:
@@ -253,6 +275,14 @@ async def main(once: bool) -> None:
             settings.calendar_reminder_minutes,
             settings.calendar_pre_minutes,
             settings.calendar_post_minutes,
+        )
+    if not once and settings.tv_webhook_token:
+        background.append(asyncio.create_task(tradingview_forever(stop, settings)))
+        logger.info(
+            "TradingView ICT worker enabled symbols=%s min_score=%s owner_only=%s",
+            settings.tv_allowed_symbols or "all",
+            settings.tv_min_score_to_notify,
+            settings.public_signals_mode == "off",
         )
     watcher = None
     if not once and settings.fast_enabled and settings.scanner_provider == "bingx":

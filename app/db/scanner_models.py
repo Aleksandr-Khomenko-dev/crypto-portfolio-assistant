@@ -12,8 +12,10 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
 )
@@ -461,3 +463,112 @@ class EarlyEventOutcome(Base):
     next_event_type: Mapped[str | None] = mapped_column(String(24))
     minutes_to_next_event: Mapped[float | None] = mapped_column(Float)
     bars_used: Mapped[int] = mapped_column(default=0)
+
+
+# --- TradingView ICT v4.2 entries (signals come ONLY from the indicator) ----------
+
+
+class RawWebhook(Base):
+    """Every webhook request as received, stored BEFORE the 200 reply so nothing is
+    lost on a restart; a worker in the runner processes rows with status "new".
+    Secrets are never stored: the token is in the URL (not kept) and a legacy body
+    secret is redacted at receipt."""
+
+    __tablename__ = "raw_webhook"
+    __table_args__ = (Index("ix_raw_webhook_status", "status", "id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    client_ip: Mapped[str | None] = mapped_column(String(64))
+    content_type: Mapped[str | None] = mapped_column(String(100))
+    body: Mapped[str] = mapped_column(Text)
+    # Legacy QS PRO Gold only: the body secret, verified at receipt (then redacted).
+    secret_ok: Mapped[bool | None] = mapped_column(Boolean)
+    # new | processed | duplicate | ignored | invalid | error
+    status: Mapped[str] = mapped_column(String(16), default="new")
+    format: Mapped[str | None] = mapped_column(String(16))  # v42 | legacy
+    plan_id: Mapped[str | None] = mapped_column(String(120))
+    event: Mapped[str | None] = mapped_column(String(24))
+    error: Mapped[str | None] = mapped_column(String(300))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Trade(Base):
+    """One indicator trade plan (planId): its levels, status and summed result in R.
+    The bot never recomputes ICT logic: every field comes from the indicator."""
+
+    __tablename__ = "trade"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[str] = mapped_column(String(120), unique=True)
+    source: Mapped[str] = mapped_column(String(16))  # tv_ict_v42 | tv_legacy | scanner
+    symbol: Mapped[str | None] = mapped_column(String(60))  # e.g. OANDA:XAUUSD
+    ticker: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str | None] = mapped_column(String(8))
+    side: Mapped[str] = mapped_column(String(4))  # BUY | SELL
+    model: Mapped[str | None] = mapped_column(String(60))
+    score: Mapped[int | None]
+    entry_type: Mapped[str | None] = mapped_column(String(16))
+    entry: Mapped[Decimal | None] = mapped_column(PRICE)
+    sl: Mapped[Decimal | None] = mapped_column(PRICE)
+    tp1: Mapped[Decimal | None] = mapped_column(PRICE)
+    tp2: Mapped[Decimal | None] = mapped_column(PRICE)
+    tp3: Mapped[Decimal | None] = mapped_column(PRICE)
+    tp2_name: Mapped[str | None] = mapped_column(String(60))
+    tp3_name: Mapped[str | None] = mapped_column(String(60))
+    units: Mapped[Decimal | None] = mapped_column(PRICE)
+    risk_usd: Mapped[Decimal | None] = mapped_column(PRICE)
+    leverage: Mapped[Decimal | None] = mapped_column(PRICE)
+    window: Mapped[str | None] = mapped_column(String(60))
+    checklist: Mapped[str | None] = mapped_column(String(300))
+    bias_main: Mapped[int | None]
+    bias_4h: Mapped[int | None]
+    day_range_pct: Mapped[float | None] = mapped_column(Float)
+    valid_hours: Mapped[float | None] = mapped_column(Float)
+    born_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    entry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # WAITING | OPEN | CLOSED | CANCELLED | LATE | FILTERED | INVALID
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    notify_reason: Mapped[str | None] = mapped_column(String(60))
+    result_r: Mapped[float] = mapped_column(Float, default=0.0)  # sum of event R
+    scanner_agreement: Mapped[str | None] = mapped_column(String(16))
+    news_nearby: Mapped[bool | None] = mapped_column(Boolean)
+    late_minutes: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TradeEvent(Base):
+    """One indicator event of a plan; (plan_id, event) is unique: a repeated webhook
+    can never produce a second message."""
+
+    __tablename__ = "trade_event"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "event", name="uq_trade_event_plan_event"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trade.id"), index=True)
+    plan_id: Mapped[str] = mapped_column(String(120))
+    event: Mapped[str] = mapped_column(String(24))
+    raw_webhook_id: Mapped[int | None] = mapped_column(ForeignKey("raw_webhook.id"))
+    price: Mapped[Decimal | None] = mapped_column(PRICE)
+    exit_price: Mapped[Decimal | None] = mapped_column(PRICE)
+    result_r: Mapped[float | None] = mapped_column(Float)
+    bar_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_reason: Mapped[str | None] = mapped_column(String(60))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Delivery(Base):
+    """Which Telegram message carried which event (replies thread under the entry)."""
+
+    __tablename__ = "delivery"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_event_id: Mapped[int] = mapped_column(ForeignKey("trade_event.id"), index=True)
+    audience: Mapped[str] = mapped_column(String(16))  # owner | public
+    chat_id: Mapped[str] = mapped_column(String(64))
+    message_id: Mapped[int | None]
+    reply_to: Mapped[int | None]
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(String(120))

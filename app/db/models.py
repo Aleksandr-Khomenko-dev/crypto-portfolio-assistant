@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 # Register scanner metadata for init_db and Alembic.
 from app.db.scanner_models import (  # noqa: F401
+    Delivery,
     EarlyEventOutcome,
     FastMarketEvent,
     MarketSetup,
@@ -36,9 +37,12 @@ from app.db.scanner_models import (  # noqa: F401
     NewsSetupLink,
     OpenInterestSnapshot,
     PatternCandidateRecord,
+    RawWebhook,
     ScannerRun,
     ScannerSnapshot,
     SetupOutcome,
+    Trade,
+    TradeEvent,
     TradingViewEvent,
 )
 

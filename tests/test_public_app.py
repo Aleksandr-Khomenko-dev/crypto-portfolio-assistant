@@ -37,7 +37,7 @@ def public(sqlite_database_url, monkeypatch):
 
 def test_only_health_and_webhooks_are_routed(public):
     paths = {r.path for r in public.app.routes if isinstance(r, APIRoute)}
-    assert paths == {"/health", "/api/webhooks/tradingview"}
+    assert paths == {"/health", "/webhook/tv/{token}", "/api/webhooks/tradingview"}
 
 
 def test_health_reveals_no_configuration(public):

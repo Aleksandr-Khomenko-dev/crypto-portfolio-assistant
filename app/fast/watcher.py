@@ -522,7 +522,11 @@ class FastMarketWatcher:
         self, symbol: str, event: str, text: str, reply_to: int | None, started: float
     ) -> tuple[list[int], str | None]:
         """Deliver once; success means Telegram returned a real message_id."""
-        if self.sender is None or not self.settings.fast_send_telegram:
+        if (
+            self.sender is None
+            or not self.settings.fast_send_telegram
+            or not self.settings.scanner_alerts_enabled  # scanner as background only
+        ):
             return [], None
         try:
             ids = await asyncio.wait_for(

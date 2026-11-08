@@ -144,7 +144,11 @@ class RunNotifier:
 
     def __init__(self, service: ScannerService, now: datetime) -> None:
         self.service, self.now = service, now
-        self.enabled = service.settings.scanner_send_telegram
+        # scanner_alerts_enabled=false keeps the scanner as background analysis only.
+        self.enabled = (
+            service.settings.scanner_send_telegram
+            and service.settings.scanner_alerts_enabled
+        )
         self.remaining = service.settings.scanner_alerts_per_run
         self.sent = 0
         self._event = asyncio.Event()
@@ -206,7 +210,10 @@ async def lifecycle_tick(runtime: ScannerRuntime, session: Session) -> int:
     ScannerRepository(session).expire(now)
     session.commit()
     runtime.setups_changed()
-    if not runtime.settings.scanner_send_telegram:
+    if not (
+        runtime.settings.scanner_send_telegram
+        and runtime.settings.scanner_alerts_enabled
+    ):
         return 0
     async with runtime.notify_lock:
         return await deliver_notifications(session, runtime.settings, now)
@@ -361,11 +368,17 @@ class ScannerService:
             run.universe_size = len(universe)
             logger.info("Scanner universe size=%s", len(universe))
             if not self.runtime.seeded:
-                # Once per process: this window query scans all snapshot history.
+                # Once per process: this window query scans all snapshot history
+                # (~50 s on a large database). Run it in a worker thread so the
+                # event loop (fast watcher, news, TradingView worker) keeps going;
+                # the session is used by this scan only, never concurrently.
                 self.runtime.seeded = True
-                for previous in self.repository.latest_results(
-                    limit=self.settings.scanner_max_markets + 2, exchange=exchange
-                ):
+                previous_results = await asyncio.to_thread(
+                    self.repository.latest_results,
+                    limit=self.settings.scanner_max_markets + 2,
+                    exchange=exchange,
+                )
+                for previous in previous_results:
                     self.runtime.frame_history.setdefault(
                         previous.symbol, previous.frames
                     )
