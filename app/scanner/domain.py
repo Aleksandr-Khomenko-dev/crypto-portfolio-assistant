@@ -214,8 +214,9 @@ class MarketContext(BaseModel):
     assets: dict[str, dict[str, str | float]] = Field(default_factory=dict)
     explanation: str = "BTC/ETH data unavailable"
     # CRYPTO = BTC/ETH context; GOLD_MACRO = DXY/US10Y/VIX, where `state` is the
-    # direction the macro backdrop favours for gold (BULLISH = supports LONG).
-    kind: Literal["CRYPTO", "GOLD_MACRO"] = "CRYPTO"
+    # direction the macro backdrop favours for gold (BULLISH = supports LONG);
+    # NONE = another TradFi market (metals, FX, indices): no market context.
+    kind: Literal["CRYPTO", "GOLD_MACRO", "NONE"] = "CRYPTO"
     risk_off: bool = False  # GOLD_MACRO: VIX fear spike (no gold shorts)
     # High-impact economic event whose blackout window covers this analysis.
     event: str | None = None

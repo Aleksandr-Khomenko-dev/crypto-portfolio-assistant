@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -21,17 +22,34 @@ WINDOW_RU = {
 }
 
 
-# Markets better read on a reference chart than on the exchange perpetual.
-TRADINGVIEW_OVERRIDES = {"NCCOGOLD2USDUSDT": "OANDA:XAUUSD", "XAUUSDT": "OANDA:XAUUSD"}
+# TradFi markets are read on the free OANDA reference chart, not on the exchange
+# perpetual (every symbol checked in TradingView symbol search, 2026-11-09).
+TRADINGVIEW_OVERRIDES = {
+    "NCCOGOLD2USDUSDT": "OANDA:XAUUSD",
+    "XAUUSDT": "OANDA:XAUUSD",
+    "NCCOXAG2USDUSDT": "OANDA:XAGUSD",
+    "NCCOXPT2USDUSDT": "OANDA:XPTUSD",
+    "NCCOPALLADIUM2USDUSDT": "OANDA:XPDUSD",
+    "NCCO724COPPER2USDUSDT": "OANDA:XCUUSD",
+    "NCCO1OILWTI2USDUSDT": "OANDA:WTICOUSD",
+    "NCCO1OILBRENT2USDUSDT": "OANDA:BCOUSD",
+    "NCCO7241NATGAS2USDUSDT": "OANDA:NATGASUSD",
+    "NCSINASDAQ1002USDUSDT": "OANDA:NAS100USD",
+    "NCSISP5002USDUSDT": "OANDA:SPX500USD",
+}
+# BingX currency pairs: NCFX + BASE + 2 + QUOTE + USDT, e.g. NCFXEUR2USDUSDT.
+FX_PAIR = re.compile(r"NCFX([A-Z]{3})2([A-Z]{3})USDT")
 
 
 def tradingview_url(symbol: str, exchange: str = "BINGX") -> str:
     """Verified format: BINGX:ARBUSDT.P (TradingView symbol page, 2026-09-24)."""
+    chart = "https://www.tradingview.com/chart/?symbol="
     if symbol in TRADINGVIEW_OVERRIDES:
-        return (
-            f"https://www.tradingview.com/chart/?symbol={TRADINGVIEW_OVERRIDES[symbol]}"
-        )
-    return f"https://www.tradingview.com/chart/?symbol={exchange}:{symbol}.P"
+        return chart + TRADINGVIEW_OVERRIDES[symbol]
+    pair = FX_PAIR.fullmatch(symbol)
+    if pair:
+        return chart + f"OANDA:{pair.group(1)}{pair.group(2)}"
+    return chart + f"{exchange}:{symbol}.P"
 
 
 @dataclass

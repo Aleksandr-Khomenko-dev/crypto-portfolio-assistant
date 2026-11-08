@@ -464,6 +464,23 @@ python -m app.telegram.scanner_smoke_test   # injected READY test alert via the 
 
 See [implementation and verification notes](docs/scanner-implementation.md) for the file inventory, audit findings and check results.
 
+## Crypto plus metals, FX and indices
+
+BingX also lists TradFi perpetuals: metals, currency pairs, stock indices and energy (`NCCO…`, `NCFX…`, `NCSI…`). They are never scanned by default. Named in `CPDA_SCANNER_TRADFI_SYMBOLS`, they are scanned **in addition to** the crypto top-N, always (outside the top-N cap and the crypto volume floor: BingX FX volume is small, but quotes are tight, e.g. EUR/USD spread 0.001% on 2026-11-09).
+
+```dotenv
+CPDA_SCANNER_WHITELIST=                    # empty: crypto top-N + the TradFi list
+CPDA_SCANNER_TOP_N=30                      # crypto markets by 24h volume
+CPDA_SCANNER_TRADFI_SYMBOLS=NCCOGOLD2USDUSDT,NCCOXAG2USDUSDT,NCFXEUR2USDUSDT,NCSINASDAQ1002USDUSDT
+CPDA_SCANNER_SNAPSHOT_RETENTION_DAYS=3     # bounded history: ~2 GB/day at 50 markets
+```
+
+- **Context.** Crypto keeps the BTC/ETH context; gold keeps its macro context; other TradFi markets get none (`kind: NONE`: no context points, no BTC risk-off cap, no BTC block in the message). Every TradFi market gets the high-impact calendar pause (`WAIT_EVENT`).
+- **Hours.** TradFi markets follow the CME schedule (closed Fri 17:00 – Sun 18:00 New York, daily 17:00–18:00 break), FX included (it opens an hour earlier on Sunday; that hour is skipped). Stocks are not supported.
+- **Fast watcher.** Named TradFi markets are watched without the volume floor (the spread filter still applies), with `CPDA_FAST_TRADFI_FLOOR_SCALE` (default 0.25); crypto keeps `CPDA_FAST_FLOOR_SCALE`.
+- **Names and charts.** Messages show `SILVER (XAG/USD)`, `EUR/USD`, `NASDAQ 100`…; the TradingView button opens the free OANDA chart (`OANDA:XAGUSD`, `OANDA:EURUSD`, `OANDA:NAS100USD`…).
+- **History.** Each cycle stores a ~120 KB snapshot per market, and each run ~190 KB of BTC/ETH context. With `CPDA_SCANNER_SNAPSHOT_RETENTION_DAYS` > 0 the runner deletes older snapshots and runs hourly in small batches, keeping every snapshot a setup or an outcome refers to. SQLite reuses the freed pages; the file does not shrink.
+
 ## Gold-only mode
 
 The scanner can run on a single TradFi market: BingX `GOLD(XAU)-USDT` (internal symbol `NCCOGOLD2USDUSDT`, ~$1B daily quote volume, verified 2026-11-03). TradFi perpetuals are excluded by default and are admitted only when named in the whitelist.
@@ -472,12 +489,12 @@ The scanner can run on a single TradFi market: BingX `GOLD(XAU)-USDT` (internal 
 CPDA_SCANNER_WHITELIST=NCCOGOLD2USDUSDT   # scanner, OI collector, fast watcher, urgent news
 CPDA_SCANNER_USE_BTC_CONTEXT=false        # BTC risk-off must not cap gold LONGs
 CPDA_SCANNER_MARKET_HOURS_GATE=true       # no setups/fast alerts while the gold market is closed
-CPDA_FAST_FLOOR_SCALE=0.25                # gold-sized fast-move floors (1m 0.25%, 5m 0.625%)
+CPDA_FAST_TRADFI_FLOOR_SCALE=0.25         # default: gold-sized fast-move floors (1m 0.25%, 5m 0.625%)
 CPDA_PORTFOLIO_MONITORING_ENABLED=false   # no crypto-portfolio monitor/digest jobs
 ```
 
 - **Market hours.** BingX quotes gold 24/7, but the real market (CME metals) is closed Friday 17:00 – Sunday 18:00 New York time and pauses daily 17:00–18:00. Weekend BingX candles carry about 1/6 of weekday volume and 1/5 of the range, so gold is skipped in those windows. Holidays are not modelled.
-- **Fast watcher.** Default floors are crypto-sized (1m 1%). The BingX gold 1m move's 99.9th percentile was 0.22% (2026-11-03), so the floor scale 0.25 makes FAST/EXTREME alerts fire only on real shocks.
+- **Fast watcher.** Default floors are crypto-sized (1m 1%). The BingX gold 1m move's 99.9th percentile was 0.22% (2026-11-03), so the TradFi floor scale 0.25 (`CPDA_FAST_TRADFI_FLOOR_SCALE`) makes FAST/EXTREME alerts fire only on real shocks.
 - Messages show `GOLD (XAU/USD)`; the TradingView button opens `OANDA:XAUUSD`.
 
 ### Gold context layers

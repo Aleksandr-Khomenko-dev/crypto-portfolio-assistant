@@ -64,9 +64,10 @@ Rescan = Callable[[str], Awaitable[None]]
 FAST_STATES = {state.value for state in FastState}
 
 
-def config_from(settings: Settings) -> FastConfig:
+def config_from(settings: Settings, scale: float | None = None) -> FastConfig:
+    """Fast-move floors; `scale` defaults to the crypto scale (fast_floor_scale)."""
     base = FastConfig()
-    scale = settings.fast_floor_scale
+    scale = settings.fast_floor_scale if scale is None else scale
     min_pct = {
         **base.min_pct,
         "1m": settings.fast_min_pct_1m,
@@ -147,6 +148,8 @@ class FastMarketWatcher:
         )
         self.destination = destination  # safe fingerprint only
         self.config = config_from(settings)
+        # TradFi markets (metals, FX, indices, energy) move far less than crypto.
+        self.tradfi_config = config_from(settings, settings.fast_tradfi_floor_scale)
         self.antispam = AntiSpam(self.config)
         self.trackers: dict[str, SymbolTracker] = {}
         self.outbox = BoundedPriorityQueue(settings.fast_queue_size)
@@ -224,6 +227,7 @@ class FastMarketWatcher:
         floor = self.settings.fast_min_quote_volume_usd
         max_spread = self.settings.fast_max_spread_pct
         whitelist = parse_symbols(self.settings.scanner_whitelist)
+        always = parse_symbols(self.settings.scanner_tradfi_symbols)
         chosen = []
         self.exclusions = {}
         self.market_hours_symbols = set()
@@ -236,7 +240,9 @@ class FastMarketWatcher:
             elif whitelist and symbol not in whitelist:
                 reason = "NOT_WHITELISTED"
             elif contract.quote_asset != "USDT" or (
-                contract.underlying_type != "COIN" and symbol not in whitelist
+                contract.underlying_type != "COIN"
+                and symbol not in whitelist
+                and symbol not in always
             ):
                 reason = "NOT_USDT_COIN_PERPETUAL"
             elif ticker is None:
@@ -246,6 +252,8 @@ class FastMarketWatcher:
                 spread = ticker.spread_pct
                 # Portfolio/active-setup symbols get a lower (but non-zero) floor.
                 limit = floor / 10 if symbol in priority else floor
+                if symbol in always:
+                    limit = 0  # named TradFi market: chosen, tightly quoted
                 if volume < limit:
                     reason = "LOW_QUOTE_VOLUME"
                 elif spread is not None and spread > max_spread * (
@@ -309,7 +317,10 @@ class FastMarketWatcher:
         if self._market_closed(symbol, received):
             self.counters["fast_market_closed_skips"] += 1
             return
-        trigger = evaluate(tracker, received, self.config)
+        config = (
+            self.tradfi_config if symbol in self.market_hours_symbols else self.config
+        )
+        trigger = evaluate(tracker, received, config)
         if trigger is not None:
             self._on_fast(symbol, trigger, received)
         # Structural early events: at most one evaluation per symbol per second.

@@ -188,9 +188,33 @@ def macro_lines(
         ),
     ]
     if context.event:
-        when = context.event_at.strftime("%d.%m %H:%M UTC") if context.event_at else na
-        lines.append(t["macro.event"].format(event=escape(context.event), time=when))
+        lines.append(event_line(context, t))
     return lines
+
+
+def event_line(context: MarketContext, t: dict[str, str]) -> str:
+    when = context.event_at.strftime("%d.%m %H:%M UTC") if context.event_at else t["na"]
+    return t["macro.event"].format(event=escape(context.event or ""), time=when)
+
+
+def context_block(
+    context: MarketContext, direction: Direction, t: dict[str, str]
+) -> list[str]:
+    """The context section and its blank line. Metals, FX and indices other than
+    gold have no BTC/ETH context: only a calendar pause is shown, if any."""
+    if context.kind == "GOLD_MACRO":
+        lines = macro_lines(context, direction, t)
+    elif context.kind == "NONE":
+        lines = [event_line(context, t)] if context.event else []
+    else:
+        lines = [
+            t["section.context"],
+            f"{dot(context.state, direction)} "
+            + t["market"].format(
+                value=t.get(f"context.{context.state}", escape(context.state))
+            ),
+        ]
+    return [*lines, ""] if lines else []
 
 
 def _active(
@@ -234,7 +258,6 @@ def _active(
         else f"{na} {risk_mark}"
     )
     oi_meaning = t.get(f"oi.{derivative.interpretation}")
-    context = result.context.state
     lines = [
         f"{icon} <b>{title.upper()}</b> · {DIRECTION_BADGE[setup.direction]}",
         t["separator"],
@@ -270,18 +293,7 @@ def _active(
         t["oi"].format(horizon="4H", value=percent(horizons.get("4h"), na)),
         *([f"<i>{oi_meaning}</i>"] if oi_meaning else []),
         "",
-        *(
-            macro_lines(result.context, setup.direction, t)
-            if result.context.kind == "GOLD_MACRO"
-            else [
-                t["section.context"],
-                f"{dot(context, setup.direction)} "
-                + t["market"].format(
-                    value=t.get(f"context.{context}", escape(context))
-                ),
-            ]
-        ),
-        "",
+        *context_block(result.context, setup.direction, t),
         t["section.levels"],
         t["support"].format(value=zone_text(frame.supports, na)),
         t["resistance"].format(value=zone_text(frame.resistances, na)),

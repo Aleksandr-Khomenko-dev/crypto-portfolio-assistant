@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from app.config import Settings
 from app.scanner.domain import Contract, Ticker
@@ -9,7 +10,19 @@ from app.scanner.domain import Contract, Ticker
 EXPLICIT_CONTRACT_TYPES = frozenset({"PERPETUAL", "TRADIFI_PERPETUAL"})
 # BingX TradFi perpetuals: NC + class (CO commodity, FX, SK stock, SI index) + BASE2QUOTE.
 TRADFI_NAME = re.compile(r"NC(?:CO|FX|SK|SI)([A-Z0-9]+?)2([A-Z]{3})USDT")
-DISPLAY_NAMES = {"NCCOGOLD2USDUSDT": "GOLD (XAU/USD)", "XAUUSDT": "GOLD (XAU/USD)"}
+DISPLAY_NAMES = {
+    "NCCOGOLD2USDUSDT": "GOLD (XAU/USD)",
+    "XAUUSDT": "GOLD (XAU/USD)",
+    "NCCOXAG2USDUSDT": "SILVER (XAG/USD)",
+    "NCCOXPT2USDUSDT": "PLATINUM (XPT/USD)",
+    "NCCOPALLADIUM2USDUSDT": "PALLADIUM (XPD/USD)",
+    "NCCO724COPPER2USDUSDT": "COPPER",
+    "NCCO1OILWTI2USDUSDT": "OIL WTI",
+    "NCCO1OILBRENT2USDUSDT": "OIL BRENT",
+    "NCCO7241NATGAS2USDUSDT": "NATURAL GAS",
+    "NCSINASDAQ1002USDUSDT": "NASDAQ 100",
+    "NCSISP5002USDUSDT": "S&P 500",
+}
 
 
 def symbols(raw: str) -> set[str]:
@@ -27,17 +40,22 @@ def display_symbol(symbol: str) -> str:
 def filter_universe(
     contracts: list[Contract], tickers: dict[str, Ticker], settings: Settings
 ) -> list[str]:
+    """Crypto: the top-N USDT perpetuals by volume above the volume floor. TradFi
+    markets named in scanner_tradfi_symbols are added after them, always (no cap,
+    no volume floor): the operator chose them, and their prices are quoted."""
     whitelist, blacklist = (
         symbols(settings.scanner_whitelist),
         symbols(settings.scanner_blacklist),
     )
-    eligible = []
+    always = symbols(settings.scanner_tradfi_symbols)
+    eligible, added = [], []
     bases = {contract.base_asset for contract in contracts}
     for contract in contracts:
         symbol = contract.symbol
         # Naming a TradFi perpetual (e.g. BingX gold NCCOGOLD2USDUSDT, Binance XAUUSDT)
-        # in the whitelist is the explicit opt-in; without it only crypto is scanned.
-        explicit = symbol in whitelist
+        # in the whitelist or the TradFi list is the explicit opt-in; without it only
+        # crypto is scanned.
+        explicit = symbol in whitelist or symbol in always
         if (
             contract.quote_asset != "USDT"
             or contract.contract_type
@@ -65,15 +83,18 @@ def filter_universe(
         ):
             continue
         ticker = tickers.get(symbol)
-        if (
-            ticker is None
-            or ticker.quote_volume < settings.scanner_min_quote_volume_usd
-        ):
+        if ticker is None:
             continue
-        eligible.append(symbol)
-    eligible.sort(key=lambda symbol: (-tickers[symbol].quote_volume, symbol))
+        if symbol in always:
+            added.append(symbol)
+        elif ticker.quote_volume >= settings.scanner_min_quote_volume_usd:
+            eligible.append(symbol)
+
+    def by_volume(symbol: str) -> tuple[Decimal, str]:
+        return (-tickers[symbol].quote_volume, symbol)
+
     count = min(
         settings.scanner_top_n or settings.scanner_max_markets,
         settings.scanner_max_markets,
     )
-    return eligible[:count]
+    return sorted(eligible, key=by_volume)[:count] + sorted(added, key=by_volume)

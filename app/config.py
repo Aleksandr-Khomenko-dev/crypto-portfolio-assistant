@@ -127,9 +127,20 @@ class Settings(BaseSettings):
     scanner_min_quote_volume_usd: Decimal = Field(default=Decimal("10000000"), ge=0)
     scanner_blacklist: str = ""
     # When set, the scanner, OI collector, fast watcher and urgent news alerts use
-    # ONLY these symbols. A TradFi perpetual is scanned only when named here, e.g.
-    # gold-only mode: CPDA_SCANNER_WHITELIST=NCCOGOLD2USDUSDT (BingX GOLD(XAU)-USDT).
+    # ONLY these symbols. A TradFi perpetual is scanned only when named here or in
+    # scanner_tradfi_symbols, e.g. gold-only mode:
+    # CPDA_SCANNER_WHITELIST=NCCOGOLD2USDUSDT (BingX GOLD(XAU)-USDT).
     scanner_whitelist: str = ""
+    # TradFi perpetuals scanned IN ADDITION to the crypto top-N: metals, FX, indices,
+    # energy (e.g. NCCOXAG2USDUSDT,NCFXEUR2USDUSDT). Naming one here is the explicit
+    # opt-in; listed markets are always scanned while their market is open, outside
+    # the crypto top-N cap and volume floor (BingX FX volume is small but quoted
+    # tightly). A whitelist, when set, still restricts everything.
+    scanner_tradfi_symbols: str = ""
+    # Each snapshot keeps the full analysis (~120 KB, one per market per cycle) and
+    # each run its BTC/ETH context (~190 KB). Older than this many days, both are
+    # deleted unless a setup or an outcome refers to them. 0 keeps everything.
+    scanner_snapshot_retention_days: int = Field(default=0, ge=0)
     # TradFi perpetuals trade 24/7 on the exchange while the real market is closed;
     # skip them outside CME metals hours (Sun 18:00 - Fri 17:00 New York, daily
     # 17:00-18:00 break). Crypto is never gated. See app/scanner/market_hours.py.
@@ -188,9 +199,12 @@ class Settings(BaseSettings):
     fast_min_pct_3m: float = Field(default=1.8, gt=0)
     fast_min_pct_5m: float = Field(default=2.5, gt=0)
     # Multiplies EVERY absolute fast-move floor (FAST and EXTREME, 15s..5m). The
-    # defaults are crypto-sized; gold moves ~10x less (BingX gold 1m |move| p99.9 was
-    # 0.22% on 2026-11-03), so gold-only mode uses 0.25 -> 1m floor 0.25%.
+    # defaults are crypto-sized and apply to crypto markets.
     fast_floor_scale: float = Field(default=1.0, gt=0, le=1)
+    # The same scale for TradFi markets (metals, FX, indices, energy). Gold moves ~10x
+    # less than crypto (BingX gold 1m |move| p99.9 was 0.22% on 2026-11-03), so 0.25
+    # -> 1m floor 0.25%; FX moves less still, so it triggers only on real spikes.
+    fast_tradfi_floor_scale: float = Field(default=0.25, gt=0, le=1)
     fast_volume_expansion: float = Field(default=3.0, gt=1)
     fast_cooldown_minutes: int = Field(default=30, ge=1)
     fast_queue_size: int = Field(default=200, ge=10)

@@ -109,6 +109,31 @@ async def lifecycle_forever(stop: asyncio.Event, interval: float) -> None:
             logger.error("Lifecycle tick failed error=%s", type(exc).__name__)
 
 
+async def retention_forever(
+    stop: asyncio.Event, days: int, every: float = 3600, first: float = 600
+) -> None:
+    """Delete scanner history older than `days` (see app/scanner/retention.py): first
+    after `first` seconds (the start-up scan goes first), then every `every`."""
+    from app.scanner.retention import prune
+
+    delay = first
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+            return
+        except TimeoutError:
+            pass
+        delay = every
+        try:
+            deleted = await prune(get_session_factory(), datetime.now(UTC), days, stop)
+            if deleted:
+                logger.info(
+                    "Scanner history pruned rows=%s older_than=%sd", deleted, days
+                )
+        except Exception as exc:  # noqa: BLE001 - try again next time
+            logger.error("Scanner history pruning failed error=%s", type(exc).__name__)
+
+
 async def log_news_status(stop: asyncio.Event, pipeline, every: float = 300) -> None:
     while not stop.is_set():
         try:
@@ -246,6 +271,16 @@ async def main(once: bool) -> None:
                 lifecycle_forever(stop, settings.lifecycle_check_seconds)
             )
         )
+        if settings.scanner_snapshot_retention_days:
+            background.append(
+                asyncio.create_task(
+                    retention_forever(stop, settings.scanner_snapshot_retention_days)
+                )
+            )
+            logger.info(
+                "Scanner history retention %sd (older snapshots and runs deleted)",
+                settings.scanner_snapshot_retention_days,
+            )
         if settings.news_enabled:
             from app.news import service as news_service
 

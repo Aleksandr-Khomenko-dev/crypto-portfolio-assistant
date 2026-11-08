@@ -69,16 +69,25 @@ def symbol_context(
     crypto: MarketContext,
     gold: MarketContext | None,
     blackout: list[EconomicEvent],
+    tradfi: frozenset[str] | set[str] = frozenset(),
 ) -> MarketContext:
-    """Crypto symbols share the BTC/ETH context; gold gets its macro context (never
-    BTC's) plus the calendar blackout."""
-    if symbol not in GOLD_SYMBOLS:
+    """Crypto symbols share the BTC/ETH context; gold gets its macro context; other
+    TradFi markets (metals, FX, indices, energy) get none. BTC/ETH never apply to a
+    TradFi market, and every TradFi market gets the calendar blackout."""
+    if symbol in GOLD_SYMBOLS:
+        context = (
+            gold.model_copy(deep=True)
+            if gold is not None
+            else MarketContext(
+                kind="GOLD_MACRO", explanation="Gold macro context disabled"
+            )
+        )
+    elif symbol in tradfi:
+        context = MarketContext(
+            kind="NONE", explanation="Not crypto: BTC/ETH context not applied"
+        )
+    else:
         return crypto
-    context = (
-        gold.model_copy(deep=True)
-        if gold is not None
-        else MarketContext(kind="GOLD_MACRO", explanation="Gold macro context disabled")
-    )
     if blackout:
         context.event = " + ".join(dict.fromkeys(e.title for e in blackout))[:200]
         context.event_at = min(e.at for e in blackout)
@@ -280,13 +289,19 @@ class ScannerService:
         ]
 
     async def _gold_inputs(
-        self, universe: list[str], now: datetime, errors: dict[str, str]
+        self,
+        universe: list[str],
+        now: datetime,
+        errors: dict[str, str],
+        tradfi: frozenset[str] | set[str] = frozenset(),
     ) -> tuple[MarketContext | None, list[EconomicEvent]]:
-        """Macro context and calendar blackout, fetched only when gold is scanned."""
-        if not any(symbol in GOLD_SYMBOLS for symbol in universe):
+        """Gold's macro context (only when gold is scanned) and the calendar blackout
+        (when any TradFi market is scanned)."""
+        gold = any(symbol in GOLD_SYMBOLS for symbol in universe)
+        if not gold and not any(symbol in tradfi for symbol in universe):
             return None, []
         context, blackout = None, []
-        if self.runtime.macro is not None:
+        if gold and self.runtime.macro is not None:
             try:
                 context = await self.runtime.macro.context(now)
             except Exception as exc:  # noqa: BLE001 - macro is optional context
@@ -355,12 +370,11 @@ class ScannerService:
                 # One symbol only; the watcher already applied its liquidity filter.
                 tradable = {c.symbol for c in contracts if c.status == "TRADING"}
                 universe = [only] if only in tradable and only in tickers else []
+            tradfi = {
+                c.symbol for c in contracts if follows_market_hours(c.underlying_type)
+            }
             if self.settings.scanner_market_hours_gate and not metals_market_open(now):
-                gated = {
-                    c.symbol
-                    for c in contracts
-                    if follows_market_hours(c.underlying_type)
-                }
+                gated = tradfi
                 closed = [symbol for symbol in universe if symbol in gated]
                 if closed:
                     logger.info("Scanner skipped closed-market symbols=%s", closed)
@@ -375,7 +389,7 @@ class ScannerService:
                 self.runtime.seeded = True
                 previous_results = await asyncio.to_thread(
                     self.repository.latest_results,
-                    limit=self.settings.scanner_max_markets + 2,
+                    limit=max(self.settings.scanner_max_markets, len(universe)) + 2,
                     exchange=exchange,
                 )
                 for previous in previous_results:
@@ -428,7 +442,9 @@ class ScannerService:
                 if self.settings.scanner_use_btc_context
                 else MarketContext(explanation="Context disabled")
             )
-            gold_context, blackout = await self._gold_inputs(universe, now, errors)
+            gold_context, blackout = await self._gold_inputs(
+                universe, now, errors, tradfi
+            )
             semaphore = asyncio.Semaphore(self.settings.scanner_concurrency)
 
             validation_bars: dict[str, list[Candle]] = {}
@@ -500,7 +516,9 @@ class ScannerService:
                             symbol,
                             frames,
                             derivatives,
-                            symbol_context(symbol, context, gold_context, blackout),
+                            symbol_context(
+                                symbol, context, gold_context, blackout, tradfi
+                            ),
                             tickers[symbol],
                             observed_at,
                             self.settings,
