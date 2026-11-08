@@ -28,11 +28,17 @@ class TelegramService:
             portfolio.telegram_chat_id, format_digest_message(digest.content)
         )
 
-    async def send_scanner(self, chat_id: str, text: str) -> list[int]:
-        """Returns Telegram message ids (empty when disabled); truthy when sent."""
+    async def send_scanner(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: list[tuple[str, str]] | None = None,
+    ) -> list[int]:
+        """Returns Telegram message ids (empty when disabled); truthy when sent.
+        `buttons` are (label, url) link buttons, e.g. open the chart on TradingView."""
         if not self.enabled:
             return []
-        return await self._deliver(chat_id, text)
+        return await self._deliver(chat_id, text, None, buttons)
 
     async def send_message(
         self,

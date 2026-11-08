@@ -81,6 +81,15 @@ def _news_context(session: Session, setup: MarketSetup, as_of: datetime) -> list
         return []
 
 
+def chart_button(setup: MarketSetup) -> list[tuple[str, str]]:
+    """One tap from the signal to the chart (gold opens the free OANDA:XAUUSD)."""
+    from app.telegram.fast import tradingview_url
+
+    return [
+        ("📈 TradingView", tradingview_url(setup.symbol, setup.exchange or "BINGX"))
+    ]
+
+
 async def deliver_notifications(
     session: Session,
     settings: Settings,
@@ -140,19 +149,21 @@ async def deliver_notifications(
             episode_invalidation=setup.initial_invalidation,
             news=news,
         )
-        pending.append((setup.id, message))
+        pending.append((setup.id, message, chart_button(setup)))
         if len(pending) >= min(settings.scanner_alerts_per_run, limit or 10**9):
             break
     session.commit()  # Release reads before waiting for Telegram or its pacing delay.
     accepted = 0
-    for index, (setup_id, message) in enumerate(pending):
+    for index, (setup_id, message, buttons) in enumerate(pending):
         if index:
             await asyncio.sleep(settings.scanner_telegram_interval_seconds)
         sent, error, retry, message_id = False, None, None, None
         try:
             # Bounded wait: a hung request must not hold the scan lock indefinitely.
             response = await asyncio.wait_for(
-                telegram.send_scanner(settings.scanner_telegram_chat_id, message),
+                telegram.send_scanner(
+                    settings.scanner_telegram_chat_id, message, buttons=buttons
+                ),
                 timeout=settings.http_timeout_seconds,
             )
             sent = bool(response)
@@ -220,7 +231,7 @@ async def deliver_notifications(
             # A flood limit applies to the whole bot/chat: defer the rest of the batch
             # too, so the next cycle cannot immediately hit the limit again.
             retry_at = setup.notified_data["retry_at"]
-            for later_id, _ in pending[index + 1 :]:
+            for later_id, _, _ in pending[index + 1 :]:
                 later = session.get(MarketSetup, later_id)
                 if later is not None:
                     later.notified_data = {
