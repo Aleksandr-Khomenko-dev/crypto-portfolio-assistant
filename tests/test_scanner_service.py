@@ -277,3 +277,25 @@ async def test_scanner_telegram_commands_and_scheduler(session):
         build_scheduler(Settings(scanner_enabled=False)).get_job("market-scanner")
         is None
     )
+
+
+def test_ready_only_sends_one_confirmed_entry_and_its_outcome(session):
+    now = datetime.now(UTC)
+    settings, _, _, row = save_ready(session, now, scanner_alert_ready_only=True)
+    assert row.readiness == "READY"
+    row.readiness = "WAIT_RETEST"
+    assert not should_notify(row, now, settings)  # forming setups are never sent
+    row.readiness = "READY"
+    assert should_notify(row, now, settings)  # the confirmed entry
+    row.notified_data = {
+        "state": row.state,
+        "score": row.score,
+        "readiness": "READY",
+        "ready_notified": True,
+        "lifecycle": "ACTIVE",
+    }
+    row.last_notified_at = now
+    row.score += 10  # upgrades are not re-sent
+    assert not should_notify(row, now + timedelta(hours=5), settings)
+    row.lifecycle = "INVALIDATED"  # the outcome of a sent entry is
+    assert should_notify(row, now + timedelta(hours=5), settings)

@@ -247,6 +247,11 @@ class Settings(BaseSettings):
     scanner_high_score: int = Field(default=80, ge=0, le=100)
     scanner_extreme_score: int = Field(default=90, ge=0, le=100)
     scanner_alert_score: int = Field(default=80, ge=0, le=100)
+    # Only a confirmed entry is sent: once, when the setup turns READY (closed-candle
+    # break aligned with 1h, held on a retest, volume, valid risk, no macro/event
+    # pause). Forming setups and score/state upgrades are not sent; the outcome
+    # (target, invalidation, expiry) of a sent entry still is.
+    scanner_alert_ready_only: bool = False
     scanner_cooldown_minutes: int = Field(default=60, ge=0)
     scanner_score_delta: int = Field(default=5, ge=1, le=100)
     scanner_setup_expiry_minutes: int = Field(default=240, ge=15)

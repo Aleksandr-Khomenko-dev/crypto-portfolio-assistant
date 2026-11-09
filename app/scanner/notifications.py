@@ -28,6 +28,8 @@ def should_notify(setup: MarketSetup, now: datetime, settings: Settings) -> bool
     if setup.score < settings.scanner_alert_score or utc(setup.expires_at) <= now:
         return False
     ready_sent = old.get("ready_notified", old.get("readiness") == "READY")
+    if settings.scanner_alert_ready_only:
+        return setup.readiness == "READY" and not ready_sent
     if "score" in old and setup.readiness == "READY" and not ready_sent:
         return True
     if setup.last_notified_at and now < utc(setup.last_notified_at) + timedelta(
