@@ -3,7 +3,7 @@
     python -m scripts.dukascopy_gold --start 2019-01-01
 
 Fetches Dukascopy's public daily BID 1-minute candle files (no account needed),
-caches them in data/backtest/dukascopy/, and writes 5m/15m/1h/4h candles to
+caches them in data/backtest/dukascopy/, and writes 5m/15m/1h/4h/1d candles to
 data/backtest/XAUUSD_<tf>.json in the format scripts.backtest_gold reads, so the
 replay runs with `python -m scripts.backtest_gold --symbol XAUUSD`.
 
@@ -105,7 +105,7 @@ def main() -> None:
     missing = [d.isoformat() for d, b in zip(days, blobs, strict=True) if b is None]
     minutes = [m for d, b in zip(days, blobs, strict=True) for m in parse_day(d, b)]
     minutes.sort()
-    for tf in ("5m", "15m", "1h", "4h"):
+    for tf in ("5m", "15m", "1h", "4h", "1d"):
         bars = aggregate(minutes, tf)
         (CACHE / f"{inst}_{tf}.json").write_text(
             json.dumps([b.model_dump(mode="json") for b in bars])

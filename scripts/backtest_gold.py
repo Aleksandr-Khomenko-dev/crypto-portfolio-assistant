@@ -2,6 +2,7 @@
 
     python -m scripts.backtest_gold                 # gold, all cached/available history
     python -m scripts.backtest_gold --refresh       # re-download candles first
+    python -m scripts.backtest_gold --symbol XAUUSD --ladder 1h   # Dukascopy, 1h entries
 
 For every CLOSED 15m candle while the market is open it runs the bot's own
 analyze_frame (15m/1h/4h) and score_setup, exactly as the live scanner does, and
@@ -9,6 +10,11 @@ opens a paper trade at the first READY of a direction: entry = that candle's clo
 stop = the setup's invalidation, targets 0.5R/1R/1.5R/2R, tracked by the live
 outcome engine (app/research/outcomes.py) for 96 bars, same-bar ambiguity resolved
 with 5m candles when BingX still has them.
+
+--ladder 1h shifts every rule one timeframe up without touching the live code:
+the break/retest/volume/risk checks run on 1h closes, "1h structure" becomes 4h
+and the "4h" EMA regime becomes the daily chart; event recency keeps the same
+number of bars and trades are tracked for 72 1h bars with 15m ambiguity children.
 
 Not replayed (no history): funding/OI (derivatives block = 0, so scores are up to
 10 points lower than live), the DXY/US10Y/VIX macro veto and the calendar pause.
@@ -31,7 +37,13 @@ import httpx
 from app.analytics.analysis import analyze_frame
 from app.config import get_settings
 from app.providers.bingx_futures import internal_to_bingx_symbol, parse_candle
-from app.research.outcomes import TRACKING, Progress, advance, build_plan
+from app.research.outcomes import (
+    LOWER_TIMEFRAME,
+    TRACKING,
+    Progress,
+    advance,
+    build_plan,
+)
 from app.scanner.domain import (
     INTERVAL_SECONDS,
     Candle,
@@ -47,7 +59,9 @@ from app.scanner.scoring import build_result
 URL = "https://open-api.bingx.com/openApi/swap/v3/quote/klines"
 CACHE = Path("data/backtest")
 WINDOW = 300  # bars per frame, as scanner_candle_limit
-HORIZON = 96  # 15m bars (24 h), as outcome_max_bars_15m
+HORIZON = {"15m": 96, "1h": 72}  # entry bars tracked (96 = outcome_max_bars_15m)
+SLOTS = ("15m", "1h", "4h")  # the frame keys score_setup reads
+LADDERS = {"15m": ("15m", "1h", "4h"), "1h": ("1h", "4h", "1d")}
 
 
 def download(symbol: str, timeframe: str) -> list[Candle]:
@@ -91,16 +105,28 @@ def closed_until(bars: list[Candle], now: datetime, start: int) -> int:
     return start
 
 
-def replay(symbol: str, refresh: bool) -> list[dict[str, Any]]:
+def replay(symbol: str, refresh: bool, ladder: str = "15m") -> list[dict[str, Any]]:
     settings = get_settings()
-    data = {tf: candles(symbol, tf, refresh) for tf in ("5m", "15m", "1h", "4h")}
+    tfs = dict(zip(SLOTS, LADDERS[ladder], strict=True))  # slot -> real timeframe
+    entry_tf = tfs["15m"]
+    entry_seconds = INTERVAL_SECONDS[entry_tf]  # type: ignore[index]
+    child_tf = LOWER_TIMEFRAME[entry_tf]
+    # score_setup measures event recency as bars * 900 s; keep the same bar count.
+    settings = settings.model_copy(
+        update={
+            "scanner_event_max_bars": settings.scanner_event_max_bars
+            * entry_seconds
+            // 900
+        }
+    )
+    data = {tf: candles(symbol, tf, refresh) for tf in (child_tf, *tfs.values())}
     children: dict[datetime, list[Candle]] = {}
-    for bar in data["5m"]:
+    for bar in data[child_tf]:
         parent = bar.open_time - timedelta(
-            seconds=bar.open_time.timestamp() % INTERVAL_SECONDS["15m"]
+            seconds=bar.open_time.timestamp() % entry_seconds
         )
         children.setdefault(parent, []).append(bar)
-    m15, frames_cache = data["15m"], {}
+    m15, frames_cache = data[entry_tf], {}
     cursor = {"1h": 0, "4h": 0}
     previous: dict[str, Any] = {}
     open_trades: dict[Direction, dict[str, Any]] = {}
@@ -108,7 +134,7 @@ def replay(symbol: str, refresh: bool) -> list[dict[str, Any]]:
     grace = timedelta(seconds=settings.scanner_data_grace_seconds + 1)
     for i in range(WINDOW, len(m15)):
         bar = m15[i]
-        now = bar.open_time + timedelta(minutes=15) + grace
+        now = bar.open_time + timedelta(seconds=entry_seconds) + grace
         # Open trades advance on every closed bar, market open or not (as live).
         for direction, trade in list(open_trades.items()):
             step = advance(
@@ -116,7 +142,7 @@ def replay(symbol: str, refresh: bool) -> list[dict[str, Any]]:
                 trade["progress"],
                 [bar],
                 now,
-                HORIZON,
+                HORIZON[entry_tf],
                 {bar.open_time: children.get(bar.open_time, [])},
             )
             trade["progress"] = step.progress
@@ -128,23 +154,28 @@ def replay(symbol: str, refresh: bool) -> list[dict[str, Any]]:
         frames = {}
         try:
             frames["15m"] = analyze_frame(
-                m15[i - WINDOW + 1 : i + 1], "15m", now, settings, previous.get("15m")
+                m15[i - WINDOW + 1 : i + 1],
+                entry_tf,
+                now,
+                settings,
+                previous.get("15m"),
             )
-            for tf in ("1h", "4h"):
-                end = cursor[tf] = closed_until(data[tf], now, cursor[tf])
+            for slot in ("1h", "4h"):
+                tf = tfs[slot]
+                end = cursor[slot] = closed_until(data[tf], now, cursor[slot])
                 if end < WINDOW:
                     raise ValueError("warming up")
-                key = (tf, end)
+                key = (slot, end)
                 if key not in frames_cache:
                     frames_cache.clear() if len(frames_cache) > 8 else None
                     frames_cache[key] = analyze_frame(
                         data[tf][end - WINDOW : end],
-                        tf,
+                        tf,  # type: ignore[arg-type]
                         now,
                         settings,
-                        previous.get(tf),
+                        previous.get(slot),
                     )
-                frames[tf] = frames_cache[key]
+                frames[slot] = frames_cache[key]
         except ValueError:
             continue
         previous = frames
@@ -161,7 +192,7 @@ def replay(symbol: str, refresh: bool) -> list[dict[str, Any]]:
             ):
                 continue
             plan = build_plan(
-                setup.direction, "15m", bar.close, setup.risk.invalidation
+                setup.direction, entry_tf, bar.close, setup.risk.invalidation
             )
             if plan is None:
                 continue
@@ -221,10 +252,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="NCCOGOLD2USDUSDT")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--ladder", choices=sorted(LADDERS), default="15m")
     args = parser.parse_args()
     started = time.monotonic()
-    trades = replay(args.symbol.upper(), args.refresh)
-    out = CACHE / f"{args.symbol.upper()}_trades.json"
+    trades = replay(args.symbol.upper(), args.refresh, args.ladder)
+    suffix = "" if args.ladder == "15m" else f"_{args.ladder}"
+    out = CACHE / f"{args.symbol.upper()}{suffix}_trades.json"
     out.write_text(json.dumps(trades, indent=1, default=str))
     wins = sum(t["first"]["1r"] == "TARGET_FIRST" for t in trades)
     losses = sum(t["first"]["1r"] == "INVALIDATION_FIRST" for t in trades)
